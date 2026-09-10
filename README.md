@@ -164,9 +164,3 @@ cd frontend && npm install && npm run dev
 - Never commit `.env` — it contains credentials
 - Set `OPERATOR_API_KEY` in production; pass as header `X-Operator-Key` for destructive actions
 - App is intended for internal/trusted networks
-
----
-
-## License
-
-Internal use — BMC Helix RSCD Manager v2.0
