@@ -1,6 +1,6 @@
 # RSCD Manager
 
-Windows-only control portal for **BMC BladeLogic RSCD agents** — inventory, WMI health checks, and bulk uninstall jobs across your VM fleet.
+Windows-only control portal for **BladeLogic RSCD agents** — inventory, WMI health checks, and bulk uninstall jobs across your VM fleet.
 
 Developed by [Sumit Kumawat](https://www.sumitkumawat.com)
 
