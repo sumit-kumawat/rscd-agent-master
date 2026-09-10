@@ -67,7 +67,7 @@ Copy `.env.production.example` to `.env` and edit:
 | `APP_PORT` | Web UI port (default `8080`) |
 | `RSCD_OS_USERS` | WMI credentials — `user:password` comma-separated |
 | `WMI_DEFAULT_DOMAIN` | AD domain for WMI (e.g. `CORP`) |
-| `WMI_DNS_SUFFIXES` | Expand short hostnames (`corp.helixops.ai,bmc.com`) |
+| `WMI_DNS_SUFFIXES` | Expand short hostnames (`test-vm.example.com`) |
 | `MONITOR_INTERVAL_SEC` | Background check interval (default `30`) |
 | `MONITOR_CONCURRENCY` | Parallel monitor workers (default `30`) |
 | `UNINSTALL_CONCURRENCY` | Parallel uninstall workers (default `20`) |
