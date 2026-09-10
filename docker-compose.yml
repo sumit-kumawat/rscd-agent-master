@@ -1,0 +1,73 @@
+services:
+  mongodb:
+    image: mongo:7
+    container_name: rscd-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: ${MONGO_INITDB_DATABASE:-rscd_agent_master}
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rscd-agent-master-app:latest
+    container_name: rscd-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${APP_PORT:-8080}:5000"
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongodb:27017/rscd_agent_master}
+      MONITOR_INTERVAL_SEC: ${MONITOR_INTERVAL_SEC:-30}
+      MONITOR_CONCURRENCY: ${MONITOR_CONCURRENCY:-30}
+      UNINSTALL_CONCURRENCY: ${UNINSTALL_CONCURRENCY:-20}
+      REMOTE_METHODS: ${REMOTE_METHODS:-wmi}
+      WMIEXEC_PATH: ${WMIEXEC_PATH:-/usr/local/bin/wmiexec.py}
+      WMI_TIMEOUT_MS: ${WMI_TIMEOUT_MS:-90000}
+      WMI_CONNECT_TIMEOUT_MS: ${WMI_CONNECT_TIMEOUT_MS:-20000}
+      WMI_MAX_ATTEMPTS: ${WMI_MAX_ATTEMPTS:-12}
+      WMI_SESSION_CACHE_MS: ${WMI_SESSION_CACHE_MS:-600000}
+      DNS_CACHE_TTL_MS: ${DNS_CACHE_TTL_MS:-300000}
+      QUICK_CHECK_CONCURRENCY: ${QUICK_CHECK_CONCURRENCY:-25}
+      RSCD_OS_USERS: ${RSCD_OS_USERS}
+      WMI_DEFAULT_DOMAIN: ${WMI_DEFAULT_DOMAIN:-CORP}
+      WMI_DNS_SUFFIXES: ${WMI_DNS_SUFFIXES:-corp.helixops.ai,bmc.com}
+      UNINSTALL_BELOW_VERSION: ${UNINSTALL_BELOW_VERSION:-22.4.00}
+      OPERATOR_API_KEY: ${OPERATOR_API_KEY:-}
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:5000/health',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  mongodb_data:
+  mongodb_config:
