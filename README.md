@@ -2,69 +2,38 @@
 
 Windows-only control portal for **BladeLogic RSCD agents** — inventory, WMI health checks, and bulk uninstall jobs across your VM fleet.
 
-Developed by [Sumit Kumawat](https://www.sumitkumawat.com)
+**URL:** http://localhost:8080
 
----
-
-## Prerequisites
-
-- [Docker](https://docs.docker.com/get-docker/) & Docker Compose v2
-- Network access from the app host to Windows VMs on **WMI ports 135 / 445**
-- WMI credentials for target hosts (`rdsroot`, `rdsmon`, `Administrator`, etc.)
-
----
-
-## Quick start (Docker — recommended)
+## Production deploy
 
 ```bash
-# 1. Clone
-git clone https://github.com/sumit-kumawat/rscd-agent-master.git
-cd rscd-agent-master
-
-# 2. Configure environment
-cp .env.production.example .env
-# Edit .env — set RSCD_OS_USERS and optionally OPERATOR_API_KEY
-
-# 3. Build & run
+cp .env.production.example .env    # edit credentials & OPERATOR_API_KEY
 chmod +x scripts/*.sh
 ./scripts/deploy-prod.sh
-
-# 4. Open the app
-open http://localhost:8080
-```
-
-**Follow logs:**
-
-```bash
 docker compose logs -f app
 ```
 
-**Health check:**
-
-```bash
-curl http://localhost:8080/health
-```
-
----
-
-## Manual deploy steps
+Or manually (on Mac, use `compose-up.sh` so WMI relay starts on the host):
 
 ```bash
 cd frontend && npm run build && cd ..
 docker compose build --no-cache app
-docker compose up -d
+./scripts/compose-up.sh up -d
 docker compose logs -f app
 ```
 
----
+### Mac + Docker (WMI relay)
 
-## Configuration (`.env`)
+Docker containers can reach SMB but **WMI DCOM/RPC hangs** inside the container. WMI runs on your **Mac host** via a relay.
 
-Copy `.env.production.example` to `.env` and edit:
+Add these to `.env` (not in the shell):
 
 | Variable | Description |
 |----------|-------------|
 | `APP_PORT` | Web UI port (default `8080`) |
+| `WMI_RELAY_URL` | Mac relay URL (default `http://host.docker.internal:19500`) |
+| `WMI_RELAY_PORT` | Relay listen port (default `19500`) |
+| `WMI_CONNECT_TIMEOUT_MS` | WMI connect timeout (default `45000`) |
 | `RSCD_OS_USERS` | WMI credentials — `user:password` comma-separated |
 | `WMI_DEFAULT_DOMAIN` | AD domain for WMI (e.g. `CORP`) |
 | `WMI_DNS_SUFFIXES` | Expand short hostnames (`test-vm.example.com`) |
@@ -77,90 +46,106 @@ Example credentials line (use quotes — passwords may contain `$`):
 
 ```env
 RSCD_OS_USERS='rdsroot:YOUR_PASS,rdsmon:YOUR_PASS,Administrator:YOUR_PASS'
+WMI_RELAY_URL=http://host.docker.internal:19500
+WMI_RELAY_PORT=19500
+WMI_CONNECT_TIMEOUT_MS=45000
 ```
 
----
+Start the stack:
 
-## Usage
+```bash
+./scripts/compose-up.sh up -d
+```
 
-1. Open **http://localhost:8080**
-2. **VMs** → Add host or Import `.txt` / `.xlsx`
-   - Status is checked **immediately** in the background after add/import
-3. Use **Check** on a row or **Check All** for manual refresh
-4. **Jobs** → **New Job** → bulk uninstall via WMI
-5. **Logs** → real-time activity feed
+Relay only (if Docker is already running):
 
-### Agent status rules
+```bash
+./scripts/start-wmi-relay.sh
+./scripts/stop-wmi-relay.sh
+tail -f ~/Projects/rscd-agent-master/logs/wmi-relay.log
+```
 
-| Status | Meaning |
-|--------|---------|
-| **Active** (red) | RSCD agent detected on host |
-| **Removed** (green) | Agent uninstalled / not present |
+WMI diagnostics for one VM:
 
-When agent is **Removed**, **Edit** and **Delete** are disabled for that record.
+```bash
+~/Projects/rscd-agent-master/scripts/wmi-diagnostics.sh vw-pun-domdv079.bmc.com
+```
 
----
+Relay health from app container:
 
-## Backup & restore
+```bash
+curl -s http://localhost:8080/api/system/wmi-relay | python3 -m json.tool
+```
 
-**Create backup:**
+On **Linux servers on the corporate network**, leave `WMI_RELAY_URL` empty.
+
+WMI credentials: set `RSCD_OS_USERS` as `DOMAIN\user:password` (first entry is used globally). Override per VM under **Edit VM → WMI credentials**.
+
+## Backup
 
 ```bash
 ./scripts/backup.sh
 ```
 
-Output: `backups/rscd-backup-YYYYMMDD-HHMMSS.tar.gz`
+Creates `backups/YYYYMMDD-HHMMSS/` with:
+- `mongodb.archive.gz` — full database dump
+- `rscd-source.tar.gz` — application source
+- `.env` — environment (secrets)
+- `rscd-backup-*.tar.gz` — single bundle for off-site storage
 
-**Restore database:**
-
-```bash
-gunzip -c backups/<stamp>/mongodb.archive.gz | \
-  docker compose exec -T mongodb mongorestore --archive --gzip --drop
-```
-
----
-
-## Stop / restart
+**Restore full backup (source + .env + database):**
 
 ```bash
-docker compose down          # stop
-docker compose up -d         # start
-docker compose restart app   # restart app only
+./scripts/restore-backup.sh 20260910-184600
 ```
 
----
-
-## Architecture
-
-- **Frontend:** React + Vite → served by Express
-- **Backend:** Node.js + Express + Socket.IO
-- **Database:** MongoDB
-- **Remote ops:** WMI only (`wmiexec.py` + impacket)
-
-See [docs/WORKFLOW.md](docs/WORKFLOW.md) for the execution flow diagram.
-
----
-
-## Local development (without Docker)
-
-**Requirements:** Node.js 20+, MongoDB running locally
+**Restore database only:**
 
 ```bash
-# Backend
-cd backend && npm install
-export MONGODB_URI=mongodb://localhost:27017/rscd_agent_master
-export RSCD_OS_USERS='rdsroot:pass,rdsmon:pass'
-npm run dev
-
-# Frontend (separate terminal)
-cd frontend && npm install && npm run dev
-# UI at http://localhost:3000 (proxies API to :5000)
+docker compose exec -T mongodb mongorestore --archive --gzip --drop \
+  < backups/<stamp>/mongodb.archive.gz
 ```
 
----
+## Workflow
 
-## Security notes
+See [docs/WORKFLOW.md](docs/WORKFLOW.md) and [docs/workflow.svg](docs/workflow.svg).
 
-- Never commit `.env` — it contains credentials
-- Set `OPERATOR_API_KEY` in production; pass as header `X-Operator-Key` for destructive actions
-- App is intended for internal/trusted networks
+## Usage
+
+1. **VMs** → Import Excel/TXT or Add hosts
+2. **Check** / background monitor updates connectivity & agent status
+3. **Jobs** → New Job → uninstall agents via WMI
+4. **Logs** → real-time activity
+
+## Security (production)
+
+| Setting | Purpose |
+|---------|---------|
+| `OPERATOR_API_KEY` | Required for uninstall, delete, cancel (header `X-Operator-Key` or operator session cookie) |
+| `RSCD_OS_USERS` | WMI credentials (never commit real values) |
+| `CORS_ORIGIN` | Restrict browser origin if using a reverse proxy |
+
+Never commit `.env` — it contains credentials. App is intended for internal/trusted networks.
+
+## Environment
+
+Copy `.env.production.example` → `.env`. Key variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `APP_PORT` | `8080` | Host port for web UI |
+| `MONGODB_URI` | internal | MongoDB connection |
+| `MONITOR_INTERVAL_SEC` | `30` | Background check interval |
+| `UNINSTALL_CONCURRENCY` | `12` | Parallel uninstall workers |
+| `WMI_DNS_SUFFIXES` | corp domains | Expand short hostnames |
+| `OPERATOR_API_KEY` | — | Protect destructive APIs |
+
+## Health
+
+```bash
+curl http://localhost:8080/health
+```
+
+## License
+
+Internal use — BMC Helix RSCD Manager v2.0

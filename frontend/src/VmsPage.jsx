@@ -1,6 +1,8 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { RefreshCw, Plus, Upload, Search, Trash2, Pencil, Unplug, Activity, Loader2 } from 'lucide-react';
+import {
+  RefreshCw, Plus, Upload, Search, Trash2, Pencil, Unplug, Activity, Loader2, ShieldCheck, ShieldAlert,
+} from 'lucide-react';
 import api from './api';
 import { onSocket } from './socket';
 import { useToast } from './components/Toast';
@@ -19,8 +21,24 @@ function isRemoved(vm) {
   return vm.agentStatus === 'removed' || vm.version === 'removed';
 }
 
+const CONNECTIVITY_LABELS = {
+  online: 'online',
+  auth_failed: 'auth failed',
+  timeout: 'timeout',
+  unreachable: 'unreachable',
+  relay_unavailable: 'relay down',
+  wmi_unavailable: 'wmi unavailable',
+  permission_denied: 'denied',
+  dns_failed: 'dns failed',
+  offline: 'offline',
+  unknown: 'unknown',
+};
+
 function connectivityLabel(vm) {
   if (vm.excluded) return 'excluded';
+  if (vm.connectivityState && CONNECTIVITY_LABELS[vm.connectivityState]) {
+    return CONNECTIVITY_LABELS[vm.connectivityState];
+  }
   return vm.status === 'online' ? 'online' : 'offline';
 }
 
@@ -83,9 +101,9 @@ function VmModal({ vm, onClose, onSaved, onChecking }) {
         <details style={{ marginBottom: 12 }}>
           <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--muted)' }}>WMI credentials (optional override)</summary>
           <label className="field" style={{ marginTop: 10 }}><span>Domain</span>
-            <input className="input" value={form.wmiDomain} onChange={(e) => set('wmiDomain', e.target.value)} placeholder="e.g. CORP" /></label>
+            <input className="input" value={form.wmiDomain} onChange={(e) => set('wmiDomain', e.target.value)} placeholder="e.g. BMC or CORP" /></label>
           <label className="field"><span>Username</span>
-            <input className="input" value={form.wmiUsername} onChange={(e) => set('wmiUsername', e.target.value)} placeholder="Leave blank to use global credentials" /></label>
+            <input className="input" value={form.wmiUsername} onChange={(e) => set('wmiUsername', e.target.value)} placeholder="e.g. rdsroot (blank = first RSCD_OS_USERS entry)" /></label>
           <label className="field"><span>Password</span>
             <input className="input" type="password" value={form.wmiPassword} onChange={(e) => set('wmiPassword', e.target.value)} placeholder={vm?.wmiUsername ? '••••••••' : ''} /></label>
         </details>
@@ -98,14 +116,60 @@ function VmModal({ vm, onClose, onSaved, onChecking }) {
   );
 }
 
-function ConnBadge({ vm }) {
+function ConnBadge({ vm, isChecking }) {
+  if (isChecking) {
+    return (
+      <span className="badge badge-checking" title="Checking status…">
+        <Loader2 className="spin" size={12} />
+        <span>Checking…</span>
+      </span>
+    );
+  }
   const label = connectivityLabel(vm);
+  const state = vm.connectivityState || (vm.status === 'online' ? 'online' : 'offline');
   const cls = {
     online: 'badge-online',
     offline: 'badge-offline',
     excluded: 'badge-excluded',
-  }[label] || 'badge-offline';
-  return <span className={`badge ${cls}`}>{label}</span>;
+    auth_failed: 'badge-offline',
+    timeout: 'badge-offline',
+    unreachable: 'badge-offline',
+    relay_unavailable: 'badge-offline',
+    wmi_unavailable: 'badge-offline',
+    permission_denied: 'badge-offline',
+    dns_failed: 'badge-offline',
+    unknown: 'badge-offline',
+  }[state] || 'badge-offline';
+  return <span className={`badge ${cls}`} title={vm.lastProbeError || ''}>{label}</span>;
+}
+
+function AuthBadge({ vm }) {
+  const auth = vm.authStatus || (
+    vm.status === 'online'
+      ? 'allowed'
+      : (vm.connectivityState === 'auth_failed' || vm.connectivityState === 'permission_denied' ? 'denied' : 'unknown')
+  );
+  if (auth === 'allowed') {
+    return (
+      <span className="badge badge-auth-allowed" title="WMI Windows authentication allowed">
+        <ShieldCheck size={12} />
+        <span>Allowed</span>
+      </span>
+    );
+  }
+  if (auth === 'denied') {
+    return (
+      <span className="badge badge-auth-denied" title="WMI Windows authentication denied or logon failed">
+        <ShieldAlert size={12} />
+        <span>Denied</span>
+      </span>
+    );
+  }
+  return (
+    <span className="badge badge-auth-unknown" title="Authentication status unknown until checked">
+      <span>—</span>
+    </span>
+  );
 }
 
 function AgentBadge({ vm }) {
@@ -168,6 +232,9 @@ export default function VmsPage() {
       const exists = prev.some((vm) => String(vm._id) === String(d.vmId));
       const patch = {
         status: d.status,
+        connectivityState: d.connectivityState,
+        authStatus: d.authStatus,
+        lastProbeError: d.lastProbeError,
         agentStatus: d.agentStatus,
         ip: d.ip,
         version: d.version,
@@ -230,8 +297,11 @@ export default function VmsPage() {
     setUninstalling((u) => ({ ...u, [vm._id]: true }));
     try {
       const r = await api.post(`/vms/${vm._id}/uninstall`, {});
-      toast('Uninstall job started', 'info');
-      nav(`/jobs/${(r.data || r.job)._id}`);
+      toast('Uninstall job started — opening realtime execution monitor…', 'info');
+      const jobId = (r.data || r.job)?._id;
+      if (jobId) {
+        nav(`/jobs/${jobId}`);
+      }
     } catch (e) {
       toast(e.message, 'error');
     } finally {
@@ -244,13 +314,14 @@ export default function VmsPage() {
     try {
       const r = await api.post(`/vms/${vm._id}/check`, {});
       const probe = r.probe || {};
-      const conn = probe.connectivity || r.data?.status;
+      const conn = probe.connectivityState || probe.connectivity || r.data?.connectivityState;
       const agent = probe.agentStatus || r.data?.agentStatus;
+      const connLabel = CONNECTIVITY_LABELS[conn] || conn || 'unknown';
       if (probe.error) {
         const short = probe.error.length > 120 ? `${probe.error.slice(0, 120)}…` : probe.error;
-        toast(`${vm.name}: offline — ${short}`, 'error');
+        toast(`${vm.name}: ${connLabel} — ${short}`, 'error');
       } else {
-        toast(`${vm.name}: ${conn === 'online' ? 'online' : 'offline'}, agent ${agent}`, 'success');
+        toast(`${vm.name}: ${connLabel}, agent ${agent}`, 'success');
       }
       if (r.data) {
         setVms((prev) => prev.map((v) => (v._id === r.data._id ? r.data : v)));
@@ -329,17 +400,24 @@ export default function VmsPage() {
               <th>IP</th>
               <th>Agent Status</th>
               <th>Connectivity</th>
+              <th>Authentication</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6} className="empty"><Loader2 className="spin" size={18} /> Loading…</td></tr>
+              <tr><td colSpan={7} className="empty"><Loader2 className="spin" size={18} /> Loading…</td></tr>
             ) : vms.length === 0 ? (
-              <tr><td colSpan={6} className="empty">No VMs — add or import hosts, then run Check</td></tr>
+              <tr><td colSpan={7} className="empty">No VMs — add or import hosts, then run Check</td></tr>
             ) : vms.map((vm) => {
               const removed = isRemoved(vm);
               const busy = checking[vm._id];
+              const auth = vm.authStatus || (
+                vm.status === 'online'
+                  ? 'allowed'
+                  : (vm.connectivityState === 'auth_failed' || vm.connectivityState === 'permission_denied' ? 'denied' : 'unknown')
+              );
+              const canUninstall = !removed && auth === 'allowed' && !uninstalling[vm._id];
               return (
                 <tr
                   key={vm._id}
@@ -353,7 +431,8 @@ export default function VmsPage() {
                   <td className="col-host">{vm.name}</td>
                   <td className="col-ip mono">{displayIp(vm.ip)}</td>
                   <td className="col-status"><AgentBadge vm={vm} /></td>
-                  <td className="col-status"><ConnBadge vm={vm} /></td>
+                  <td className="col-status"><ConnBadge vm={vm} isChecking={busy} /></td>
+                  <td className="col-status"><AuthBadge vm={vm} /></td>
                   <td className="col-actions" onClick={(e) => e.stopPropagation()}>
                     <RowActionsMenu
                       open={openMenuId === vm._id}
@@ -367,9 +446,11 @@ export default function VmsPage() {
                         },
                         {
                           icon: <Unplug size={15} />,
-                          label: uninstalling[vm._id] ? 'Uninstalling…' : 'Uninstall',
+                          label: uninstalling[vm._id]
+                            ? 'Uninstalling…'
+                            : (canUninstall ? 'Uninstall' : (removed ? 'Uninstall (Removed)' : 'Uninstall (Requires Allowed Auth)')),
                           onClick: () => uninstallVm(vm),
-                          disabled: removed || uninstalling[vm._id],
+                          disabled: !canUninstall,
                           danger: true,
                         },
                         {

@@ -271,7 +271,12 @@ class RemoteShell(cmd.Cmd):
             self.__outputBuffer = ''
             return
 
+        max_wait = int(os.environ.get('WMI_OUTPUT_WAIT_SEC', '120'))
+        deadline = time.time() + max(10, max_wait)
+
         while True:
+            if time.time() > deadline:
+                raise Exception('Timeout waiting for WMI command output after {0}s'.format(max_wait))
             try:
                 self.__transferClient.getFile(self.__share, self.__output, output_callback)
                 break

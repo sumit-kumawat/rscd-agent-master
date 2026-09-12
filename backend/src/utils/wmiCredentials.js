@@ -1,187 +1,355 @@
-const { expandHostCandidates, isSimpleHostname, isIp } = require('./hosts');
+const { isIp } = require('./hosts');
+const wmiConfig = require('../config/wmi');
 
-const CREDENTIALS = [
+/** Connectivity states returned by probes — distinct from VM operational status. */
+const CONNECTIVITY_STATES = {
+  ONLINE: 'online',
+  AUTH_FAILED: 'auth_failed',
+  TIMEOUT: 'timeout',
+  UNREACHABLE: 'unreachable',
+  RELAY_UNAVAILABLE: 'relay_unavailable',
+  WMI_UNAVAILABLE: 'wmi_unavailable',
+  PERMISSION_DENIED: 'permission_denied',
+  DNS_FAILED: 'dns_failed',
+  OFFLINE: 'offline',
+  UNKNOWN: 'unknown',
+};
+
+const FAILURE_CATEGORY_TO_KIND = {
+  AUTHENTICATION_FAILED: 'auth_failed',
+  AUTHORIZATION_FAILED: 'permission_denied',
+  WMI_TIMEOUT: 'timeout',
+  WMI_SERVICE_UNAVAILABLE: 'wmi_unavailable',
+  RPC_UNREACHABLE: 'wmi_unavailable',
+  SMB_UNREACHABLE: 'unreachable',
+  SMB_TIMEOUT: 'timeout',
+  TCP_TIMEOUT: 'unreachable',
+  DNS_FAILURE: 'dns_failed',
+  NETWORK_UNREACHABLE: 'unreachable',
+  COMMAND_FAILED: 'unknown',
+  UNKNOWN: 'unknown',
+  auth_failed: 'auth_failed',
+  permission_denied: 'permission_denied',
+  wmi_timeout: 'timeout',
+  wmi_unavailable: 'wmi_unavailable',
+  unreachable: 'unreachable',
+  rpc_unavailable: 'wmi_unavailable',
+  smb_failed: 'auth_failed',
+};
+
+/**
+ * Default BMC operations credentials — used when RSCD_OS_USERS is unset.
+ * Order: rdsroot → rdsmon → Administrator (bmcAdm1n) → Administrator (#D3Pl0y_M3nT$)
+ */
+const DEFAULT_CREDENTIALS = [
   { username: 'rdsroot', password: process.env.RDSROOT_PASSWORD || '1Rs50U$D' },
   { username: 'rdsmon', password: process.env.RDSMON_PASSWORD || 'D0N0harm' },
-  { username: 'Administrator', password: 'bmcAdm1n' },
-  { username: 'Administrator', password: '#D3Pl0y_M3nT$' },
-  { username: 'Administrator', password: 'bmcAdm1n@123' },
+  { username: 'Administrator', password: process.env.ADMIN_PASSWORD || 'bmcAdm1n' },
+  { username: 'Administrator', password: process.env.ADMIN_PASSWORD_ALT || '#D3Pl0y_M3nT$' },
 ];
+
+function parseCredentialPair(pair) {
+  const i = pair.indexOf(':');
+  if (i === -1) return null;
+  const userPart = pair.slice(0, i).trim();
+  const password = pair.slice(i + 1);
+  if (!userPart || !password) return null;
+  return normalizeIdentity({ raw: userPart, password });
+}
 
 function parseCredentials() {
   const raw = process.env.RSCD_OS_USERS;
-  if (!raw) return CREDENTIALS;
-  const parsed = raw.split(',').map((pair) => {
-    const i = pair.indexOf(':');
-    if (i === -1) return null;
-    const userPart = pair.slice(0, i).trim();
-    const password = pair.slice(i + 1);
-    const slash = userPart.indexOf('\\');
-    const slashFwd = userPart.indexOf('/');
-    if (slash > 0) {
-      return { domain: userPart.slice(0, slash), username: userPart.slice(slash + 1), password };
-    }
-    if (slashFwd > 0) {
-      return { domain: userPart.slice(0, slashFwd), username: userPart.slice(slashFwd + 1), password };
-    }
-    return { username: userPart, password };
-  }).filter(Boolean);
-  return parsed.length ? parsed : CREDENTIALS;
-}
-
-/** At most 2 domain variants — fewer WMI retries = faster checks. */
-function getCredentialDomains(vm) {
-  const domains = [];
-  if (vm?.wmiDomain) domains.push(vm.wmiDomain);
-  else if (process.env.WMI_DEFAULT_DOMAIN) domains.push(process.env.WMI_DEFAULT_DOMAIN);
-
-  const fqdn = vm?.fqdn || (vm?.name?.includes('.') ? vm.name : '');
-  if (!vm?.wmiDomain && fqdn && fqdn.includes('.')) {
-    const parts = fqdn.toLowerCase().split('.').filter(Boolean);
-    if (parts[1]) domains.push(parts[1].toUpperCase());
-  }
-
-  return [...new Set(domains.filter(Boolean))].slice(0, 2);
-}
-
-function expandCredentialVariants(credentials, vm) {
-  const domains = getCredentialDomains(vm);
-  const seen = new Set();
-  const variants = [];
-
-  const add = (cred) => {
-    const key = `${cred.domain || ''}|${cred.username}|${cred.password}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    variants.push(cred);
-  };
-
-  for (const cred of credentials) {
-    if (cred.domain) {
-      add({ ...cred, label: `${cred.domain}\\${cred.username}` });
-      continue;
-    }
-    add({ ...cred, label: cred.username });
-    for (const domain of domains) {
-      add({ ...cred, domain, label: `${domain}\\${cred.username}` });
-    }
-  }
-
-  return variants;
+  if (!raw) return DEFAULT_CREDENTIALS.map((c) => normalizeIdentity(c));
+  const parsed = raw.split(',').map(parseCredentialPair).filter(Boolean);
+  return parsed.length ? parsed : DEFAULT_CREDENTIALS.map((c) => normalizeIdentity(c));
 }
 
 /**
- * Build WMI attempts: for each credential, try hostname then IP immediately.
- * Fixes hosts where FQDN fails (stringBinding) but IP works (e.g. spectrocloud-ic).
+ * Normalize a Windows identity once — supports DOMAIN\user, DOMAIN/user, user@domain, or plain user.
  */
-function buildWmiAttempts(wmiTargets, credVariants, resolvedMap) {
-  const hostnames = [];
-  const ips = new Set();
-  const seen = new Set();
+function normalizeIdentity({ raw, username, password, domain }) {
+  let user = (username || raw || '').trim();
+  let dom = (domain || '').trim() || null;
 
-  const track = (t) => {
-    const v = String(t || '').trim();
-    if (!v || seen.has(v.toLowerCase())) return;
-    seen.add(v.toLowerCase());
-    if (isIp(v)) ips.add(v);
-    else hostnames.push(v);
-  };
-
-  for (const t of wmiTargets) track(t);
-  for (const ip of Object.values(resolvedMap || {})) track(ip);
-
-  const ipList = [...ips];
-  const attempts = [];
-  const attemptKeys = new Set();
-
-  const push = (host, cred) => {
-    const key = `${cred.domain || ''}|${cred.username}|${host}`;
-    if (attemptKeys.has(key)) return;
-    attemptKeys.add(key);
-    attempts.push({ host, cred });
-  };
-
-  // IP-first when available — faster on hosts where FQDN stringBinding fails
-  for (const cred of credVariants) {
-    for (const ip of ipList) push(ip, cred);
-    for (const host of hostnames) push(host, cred);
+  if (user.includes('\\')) {
+    const idx = user.indexOf('\\');
+    dom = user.slice(0, idx).trim() || dom;
+    user = user.slice(idx + 1).trim();
+  } else if (user.includes('/')) {
+    const idx = user.indexOf('/');
+    dom = user.slice(0, idx).trim() || dom;
+    user = user.slice(idx + 1).trim();
+  } else if (user.includes('@')) {
+    const idx = user.lastIndexOf('@');
+    const maybeDomain = user.slice(idx + 1).trim();
+    user = user.slice(0, idx).trim();
+    if (maybeDomain && !isIp(maybeDomain)) dom = maybeDomain;
   }
 
-  const max = parseInt(process.env.WMI_MAX_ATTEMPTS || '12', 10);
-  return attempts.slice(0, max);
+  if (!dom && wmiConfig.defaultDomain) dom = wmiConfig.defaultDomain;
+
+  const label = dom ? `${dom}\\${user}` : user;
+  return {
+    username: user,
+    password: password || '',
+    domain: dom || null,
+    label,
+  };
+}
+
+function resolveCredentialForVm(vm, globalCredentials) {
+  const globals = globalCredentials || parseCredentials();
+
+  if (vm?.wmiUsername && vm?.wmiPassword) {
+    return normalizeIdentity({
+      username: vm.wmiUsername,
+      password: vm.wmiPassword,
+      domain: vm.wmiDomain || null,
+    });
+  }
+
+  if (vm?.wmiUsername) {
+    const match = globals.find((c) => c.username.toLowerCase() === String(vm.wmiUsername).toLowerCase());
+    if (match) {
+      return normalizeIdentity({
+        username: match.username,
+        password: match.password,
+        domain: vm.wmiDomain || match.domain || null,
+      });
+    }
+    throw new Error(
+      `No password configured for WMI user "${vm.wmiUsername}" — set password in Edit VM or RSCD_OS_USERS`,
+    );
+  }
+
+  if (!globals.length) {
+    throw new Error('No WMI credentials configured — set RSCD_OS_USERS or per-VM credentials in Edit VM');
+  }
+
+  return { ...globals[0] };
+}
+
+/**
+ * Ordered credential list for a VM — tries each on authentication failure (no domain permutation).
+ */
+function resolveCredentialsForVm(vm, globalCredentials) {
+  const globals = globalCredentials || parseCredentials();
+
+  if (vm?.wmiUsername && vm?.wmiPassword) {
+    return [normalizeIdentity({
+      username: vm.wmiUsername,
+      password: vm.wmiPassword,
+      domain: vm.wmiDomain || null,
+    })];
+  }
+
+  if (!globals.length) {
+    throw new Error('No WMI credentials configured — set RSCD_OS_USERS or per-VM credentials in Edit VM');
+  }
+
+  if (vm?.wmiUsername) {
+    const preferred = String(vm.wmiUsername).toLowerCase();
+    const ordered = [];
+    const seen = new Set();
+
+    const pushCred = (c) => {
+      const norm = normalizeIdentity({
+        username: c.username,
+        password: c.password,
+        domain: vm.wmiDomain || c.domain || null,
+      });
+      const key = `${norm.domain || ''}\\${norm.username}:${norm.password}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      ordered.push(norm);
+    };
+
+    for (const c of globals) {
+      if (c.username.toLowerCase() === preferred) pushCred(c);
+    }
+    for (const c of globals) pushCred(c);
+
+    if (!ordered.length) {
+      throw new Error(
+        `No password configured for WMI user "${vm.wmiUsername}" — set password in Edit VM or RSCD_OS_USERS`,
+      );
+    }
+    return ordered;
+  }
+
+  return globals.map((c) => ({ ...c }));
+}
+
+function resolveWmiTarget(vm, resolvedMap = {}) {
+  const fqdn = (vm?.fqdn || '').trim();
+  const name = (vm?.name || '').trim();
+  const ip = (vm?.ip || '').trim();
+
+  let primary = fqdn || (name.includes('.') ? name : '');
+
+  if (!primary && name) {
+    for (const [cand, resolvedIp] of Object.entries(resolvedMap)) {
+      if (cand.toLowerCase().startsWith(`${name.toLowerCase()}.`) && resolvedIp && isIp(resolvedIp)) {
+        primary = cand;
+        break;
+      }
+    }
+    if (!primary) primary = name;
+  }
+
+  if (!primary && isIp(ip)) primary = ip;
+
+  if (!primary) {
+    throw new Error('VM has no hostname, FQDN, or IP for WMI target');
+  }
+
+  let fallbackIp = null;
+  if (isIp(ip) && ip !== primary) {
+    fallbackIp = ip;
+  } else {
+    for (const [cand, resolved] of Object.entries(resolvedMap)) {
+      if (resolved && isIp(resolved) && resolved !== primary) {
+        fallbackIp = resolved;
+        break;
+      }
+    }
+  }
+
+  if (!wmiConfig.allowIpFallback) fallbackIp = null;
+  if (fallbackIp && fallbackIp === primary) fallbackIp = null;
+
+  return { primary, fallbackIp, label: primary };
+}
+
+/** Ordered WMI targets — FQDN variants before bare short names, IP last. */
+function listWmiTargetCandidates(vm, resolvedMap = {}) {
+  const { getConnectTargets } = require('./hosts');
+  const seeds = getConnectTargets(vm);
+  const { primary, fallbackIp } = resolveWmiTarget(vm, resolvedMap);
+  const ordered = [];
+  const seen = new Set();
+
+  const add = (h) => {
+    const v = String(h || '').trim();
+    const key = v.toLowerCase();
+    if (!v || seen.has(key)) return;
+    seen.add(key);
+    ordered.push(v);
+  };
+
+  add(primary);
+  for (const c of seeds) {
+    if (c.includes('.') && resolvedMap[c]) add(c);
+  }
+  for (const c of seeds) add(c);
+  if (fallbackIp) add(fallbackIp);
+
+  return ordered.length ? ordered : [primary];
 }
 
 function classifyWmiError(message) {
   const msg = String(message || '');
-  if (/STATUS_ACCOUNT_DISABLED/i.test(msg)) return 'account_disabled';
-  if (/stringBinding/i.test(msg)) return 'string_binding';
-  if (/LOGON_FAILURE|STATUS_LOGON_FAILURE/i.test(msg)) return 'logon_failure';
-  if (/Access is denied/i.test(msg)) return 'access_denied';
-  return 'other';
+  if (/relay unreachable|relay connection lost|relay timed out|ECONNREFUSED.*19500/i.test(msg)) {
+    return 'relay_unavailable';
+  }
+  if (/ENOTFOUND|getaddrinfo|DNS|could not resolve|name resolution/i.test(msg)) return 'dns_failed';
+  if (/ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|network unreachable|No route to host|TCP timeout/i.test(msg)) {
+    return 'unreachable';
+  }
+  if (/timed out|timeout after \d+ms/i.test(msg)) return 'timeout';
+  if (/STATUS_ACCOUNT_DISABLED|account.*disabled/i.test(msg)) return 'account_disabled';
+  if (/STATUS_ACCOUNT_LOCKED|account.*locked/i.test(msg)) return 'account_locked';
+  if (/LOGON_FAILURE|STATUS_LOGON_FAILURE|invalid logon|authentication failed|SMB authentication failed/i.test(msg)) {
+    return 'auth_failed';
+  }
+  if (/Access is denied|STATUS_ACCESS_DENIED|permission denied|authorization failed|insufficient privileges/i.test(msg)) {
+    return 'permission_denied';
+  }
+  if (/stringBinding|RPC_S_|RPC unavailable|DCOM|WMI.*unavailable|dynamic ports/i.test(msg)) {
+    return 'wmi_unavailable';
+  }
+  if (/SMB SessionError|connection reset|broken pipe/i.test(msg)) return 'wmi_unavailable';
+  return 'unknown';
 }
 
-function summarizeWmiFailure(label, errors) {
-  const types = errors.map((e) => classifyWmiError(e));
-  const allDisabled = errors.length > 0 && types.every((t) => t === 'account_disabled');
-  if (allDisabled) {
-    return `WMI accounts disabled on ${label} — rdsroot/rdsmon cannot log on. `
-      + 'Enable the account on the host, or set per-VM WMI credentials under Edit VM.';
-  }
-
-  const disabledUsers = new Set();
-  for (const e of errors) {
-    if (!/STATUS_ACCOUNT_DISABLED/i.test(e)) continue;
-    const m = e.match(/^([^@\\]+(?:\\[^@]+)?)@/);
-    if (m) disabledUsers.add(m[1]);
-  }
-  if (disabledUsers.size > 0) {
-    const users = [...disabledUsers].join(', ');
-    return `WMI failed for ${label} — account(s) disabled: ${users}. `
-      + 'Use Edit VM → WMI credentials override, or enable the account on the host.';
-  }
-
-  const detail = errors.slice(-2).join('; ') || 'no reachable WMI endpoint';
-  return `WMI authentication failed for ${label} — ${detail}`;
+function kindFromFailureCategory(category) {
+  if (!category) return null;
+  return FAILURE_CATEGORY_TO_KIND[String(category).toUpperCase()]
+    || FAILURE_CATEGORY_TO_KIND[String(category).toLowerCase()]
+    || null;
 }
 
-/** Prefer FQDN/hostname for WMI auth (SPN); fall back to resolved IP. */
-function getWmiConnectTargets(vm, resolvedByTarget) {
-  const seeds = [];
-  if (vm?.name) seeds.push(vm.name);
-  if (vm?.fqdn) seeds.push(vm.fqdn);
-  if (vm?.ip && isIp(vm.ip)) seeds.push(vm.ip);
-
-  for (const [target, resolved] of Object.entries(resolvedByTarget || {})) {
-    seeds.push(target);
-    if (resolved) seeds.push(resolved);
-  }
-
-  const expanded = expandHostCandidates(...seeds);
-  const hostnames = [];
-  const ips = [];
-  const seen = new Set();
-
-  const add = (t, bucket) => {
-    const v = String(t || '').trim();
-    if (!v || seen.has(v.toLowerCase())) return;
-    seen.add(v.toLowerCase());
-    bucket.push(v);
+function connectivityFromErrorKind(kind) {
+  const map = {
+    auth_failed: CONNECTIVITY_STATES.AUTH_FAILED,
+    account_disabled: CONNECTIVITY_STATES.AUTH_FAILED,
+    account_locked: CONNECTIVITY_STATES.AUTH_FAILED,
+    timeout: CONNECTIVITY_STATES.TIMEOUT,
+    unreachable: CONNECTIVITY_STATES.UNREACHABLE,
+    relay_unavailable: CONNECTIVITY_STATES.RELAY_UNAVAILABLE,
+    dns_failed: CONNECTIVITY_STATES.DNS_FAILED,
+    wmi_unavailable: CONNECTIVITY_STATES.WMI_UNAVAILABLE,
+    permission_denied: CONNECTIVITY_STATES.PERMISSION_DENIED,
+    unknown: CONNECTIVITY_STATES.UNKNOWN,
   };
+  return map[kind] || CONNECTIVITY_STATES.UNKNOWN;
+}
 
-  for (const t of expanded) {
-    if (isIp(t)) add(t, ips);
-    else add(t, hostnames);
+function sanitizeErrorMessage(message, passwords = []) {
+  let out = String(message || '');
+  for (const pw of passwords) {
+    if (pw && pw.length > 0) out = out.split(pw).join('***');
   }
+  out = out.replace(/:[^@\s]+@/g, ':***@');
+  return out.slice(0, 500);
+}
 
-  return [...hostnames, ...ips];
+function formatUserFacingError(kind, vmLabel, detail) {
+  const safeDetail = sanitizeErrorMessage(detail);
+  switch (kind) {
+    case 'auth_failed':
+    case 'account_disabled':
+    case 'account_locked':
+      return `WMI authentication failed for ${vmLabel} — invalid Windows credentials or domain`;
+    case 'timeout':
+      return `WMI/DCOM timed out for ${vmLabel} — SMB may work but remote WMI did not respond within the configured timeout`;
+    case 'unreachable':
+      return `WMI target unreachable for ${vmLabel} — TCP/SMB ports not reachable from relay host`;
+    case 'relay_unavailable':
+      return 'WMI relay unavailable — run ./scripts/start-wmi-relay.sh on the host';
+    case 'dns_failed':
+      return `DNS resolution failed for ${vmLabel}`;
+    case 'wmi_unavailable':
+      return `WMI/DCOM unavailable on ${vmLabel} — check Windows Firewall and DCOM dynamic RPC ports (49152-65535)`;
+    case 'permission_denied':
+      return `WMI access denied on ${vmLabel} — credentials accepted but insufficient privileges`;
+    default:
+      return safeDetail ? `WMI failed for ${vmLabel} — ${safeDetail}` : `WMI failed for ${vmLabel}`;
+  }
+}
+
+function isRetryableWithIpFallback(kind) {
+  return ['timeout', 'wmi_unavailable', 'dns_failed', 'unreachable', 'unknown'].includes(kind);
+}
+
+function credentialLogLabel(cred) {
+  return `${cred.label}@${cred.host || 'target'}`;
 }
 
 module.exports = {
+  CONNECTIVITY_STATES,
+  FAILURE_CATEGORY_TO_KIND,
   parseCredentials,
-  getCredentialDomains,
-  expandCredentialVariants,
-  getWmiConnectTargets,
-  buildWmiAttempts,
+  normalizeIdentity,
+  resolveCredentialForVm,
+  resolveCredentialsForVm,
+  resolveWmiTarget,
+  listWmiTargetCandidates,
   classifyWmiError,
-  summarizeWmiFailure,
+  kindFromFailureCategory,
+  connectivityFromErrorKind,
+  sanitizeErrorMessage,
+  formatUserFacingError,
+  isRetryableWithIpFallback,
+  credentialLogLabel,
 };

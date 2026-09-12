@@ -1,6 +1,6 @@
 const logger = require('../utils/logger');
 const agentProbe = require('./agentProbe');
-const { runWmiPowershell, runWmiCmd } = require('../utils/wmiExec');
+const { runWmiPowershell, runWmiCmd, WMI_TIMEOUT } = require('../utils/wmiExec');
 const { toVmPlain } = require('../utils/vmPlain');
 const { isAgentRemoved } = require('../utils/agentStatus');
 const { DEFAULT_INSTALL_ROOT } = require('../utils/hosts');
@@ -81,7 +81,14 @@ class WinRemoteService {
   }
 
   async _wmiCmd(session, cmdLine) {
-    return runWmiCmd(session.host, session.username, session.password, cmdLine, session.domain || null);
+    return runWmiCmd(
+      session.host,
+      session.username,
+      session.password,
+      cmdLine,
+      session.domain || null,
+      WMI_TIMEOUT,
+    );
   }
 
   async _wmiPs(session, script) {

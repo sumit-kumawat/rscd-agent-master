@@ -93,7 +93,7 @@ class UninstallService {
     if (this.running.has(jobId)) return;
     this.running.add(jobId);
 
-    const job = await Job.findById(jobId).populate('vms');
+    const job = await Job.findById(jobId).populate({ path: 'vms', select: '+wmiPassword' });
     if (!job || job.status === 'cancelled') {
       this.running.delete(jobId);
       return;
@@ -119,7 +119,10 @@ class UninstallService {
       const cancelled = (await Job.findById(jobId))?.status === 'cancelled';
       if (cancelled) return;
 
-      const plain = toVmPlain(vm);
+      const doc = vm.wmiPassword !== undefined
+        ? vm
+        : await VM.findById(vm._id).select('+wmiPassword');
+      const plain = toVmPlain(doc || vm);
 
       if (isAgentRemoved(plain)) {
         updater.stats.skipped++;

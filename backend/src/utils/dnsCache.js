@@ -43,7 +43,7 @@ async function resolveAllTargetsFast(vm) {
   const { getConnectTargets } = require('./hosts');
   const targets = getConnectTargets(vm);
   const unique = [...new Set(targets.map((t) => String(t).trim()).filter(Boolean))];
-  const toResolve = unique.filter((t) => !isIp(t)).slice(0, 4);
+  const toResolve = unique.filter((t) => !isIp(t));
 
   const resolved = await Promise.all(
     toResolve.map(async (t) => [t, await resolveHostCached(t)])

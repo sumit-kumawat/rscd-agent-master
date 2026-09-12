@@ -11,6 +11,23 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
+ensure_wmi_relay_env() {
+  if grep -q '^WMI_RELAY_URL=' .env 2>/dev/null; then
+    return
+  fi
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    echo "==> Mac detected — enabling WMI relay (Docker cannot run WMI DCOM)"
+    {
+      echo ""
+      echo "# Auto-added for Mac Docker — WMI runs on host"
+      echo "WMI_RELAY_URL=http://host.docker.internal:19500"
+      echo "WMI_RELAY_PORT=19500"
+    } >> .env
+  fi
+}
+
+ensure_wmi_relay_env
+
 echo "==> Building frontend..."
 cd frontend
 npm ci
@@ -21,7 +38,8 @@ echo "==> Building Docker image..."
 docker compose build --no-cache app
 
 echo "==> Starting production stack..."
-docker compose up -d
+chmod +x "$ROOT/scripts/compose-up.sh"
+"$ROOT/scripts/compose-up.sh" up -d
 
 echo "==> Waiting for health..."
 for i in {1..30}; do

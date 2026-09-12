@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const multer = require('multer');
 const VM = require('../../models/VM');
 const monitor = require('../../services/monitor');
@@ -11,6 +12,7 @@ const { requireOperator } = require('../../middleware/operatorAuth');
 const { isAgentRemoved } = require('../../utils/agentStatus');
 const { normalizeVmIdentity } = require('../../utils/hosts');
 const { queueVmCheck } = require('../../services/vmCheckQueue');
+const { normalizeIdentity } = require('../../utils/wmiCredentials');
 
 const io = (req) => req.app.get('io');
 
@@ -158,9 +160,22 @@ router.put('/:id', async (req, res) => {
     if (vm.excluded) vm.status = 'excluded';
     else if (vm.status === 'excluded') vm.status = 'offline';
   }
-  if (wmiDomain != null) vm.wmiDomain = String(wmiDomain).trim();
-  if (wmiUsername != null) vm.wmiUsername = String(wmiUsername).trim();
-  if (wmiPassword != null && wmiPassword !== '') vm.wmiPassword = String(wmiPassword);
+  if (wmiUsername != null || wmiDomain != null || wmiPassword != null) {
+    const userInput = wmiUsername != null ? String(wmiUsername).trim() : vm.wmiUsername;
+    if (!userInput) {
+      vm.wmiUsername = '';
+      vm.wmiDomain = '';
+      if (wmiPassword != null) vm.wmiPassword = '';
+    } else {
+      const normalized = normalizeIdentity({
+        username: userInput,
+        domain: wmiDomain != null ? wmiDomain : vm.wmiDomain,
+      });
+      vm.wmiUsername = normalized.username;
+      vm.wmiDomain = normalized.domain || '';
+      if (wmiPassword != null && wmiPassword !== '') vm.wmiPassword = String(wmiPassword);
+    }
+  }
 
   const dup = await VM.findOne({ name: vm.name, _id: { $ne: vm._id } });
   if (dup) {
@@ -168,10 +183,13 @@ router.put('/:id', async (req, res) => {
   }
 
   await vm.save();
+  const agentProbe = require('../../services/agentProbe');
+  agentProbe.clearSession(vm);
+  queueVmCheck(vm._id, io(req));
   await activityLog.write({
     category: 'vm', level: 'info', message: `VM updated: ${vm.name}`, vmId: vm._id, vmName: vm.name,
   }, io(req));
-  res.json({ success: true, data: vm });
+  res.json({ success: true, data: vm, checkQueued: true });
 });
 
 router.delete('/:id', requireOperator, async (req, res) => {
@@ -201,28 +219,91 @@ router.post('/:id/uninstall', requireOperator, async (req, res) => {
 router.post('/:id/check', async (req, res) => {
   const vm = await VM.findById(req.params.id).select('+wmiPassword');
   if (!vm) return res.status(404).json({ success: false, message: 'Not found' });
-  const { result, vm: updated } = await connectivity.checkAndUpdate(vm);
+  const fullInventory = req.query.full === '1' || req.query.full === 'true';
+  const { result, vm: updated } = await connectivity.checkAndUpdate(vm, { lightweight: !fullInventory });
   const socket = io(req);
   socket?.emit('vm:status', {
     vmId: updated._id,
     name: updated.name,
     status: updated.status,
-    connectivity: result.connectivity,
+    connectivity: result.connectivityState || result.connectivity,
+    connectivityState: updated.connectivityState,
+    authStatus: updated.authStatus || (updated.status === 'online' ? 'allowed' : 'unknown'),
     agentStatus: updated.agentStatus,
     ip: updated.ip,
     version: updated.version,
     lastCheck: updated.lastCheck,
+    lastProbeError: updated.lastProbeError,
   });
   res.json({
     success: true,
     data: updated,
     probe: {
-      connectivity: result.connectivity,
+      connectivity: result.connectivityState || result.connectivity,
+      connectivityState: result.connectivityState,
       agentStatus: result.agentStatus,
       ip: result.ip,
       error: result.error || null,
+      errorKind: result.errorKind || null,
+      diagnostics: result.diagnostics || null,
     },
   });
+});
+
+router.post('/:id/diagnostics', async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid VM id — use a 24-character MongoDB ObjectId from GET /api/vms',
+    });
+  }
+  const vm = await VM.findById(id).select('+wmiPassword');
+  if (!vm) return res.status(404).json({ success: false, message: 'VM not found' });
+  try {
+    const agentProbe = require('../../services/agentProbe');
+    const staged = await agentProbe.diagnose(vm);
+    const { result, vm: updated } = await connectivity.checkAndUpdate(vm, { lightweight: true });
+    const socket = io(req);
+    socket?.emit('vm:status', {
+      vmId: updated._id,
+      name: updated.name,
+      status: updated.status,
+      connectivity: result.connectivityState || result.connectivity,
+      connectivityState: updated.connectivityState,
+      agentStatus: updated.agentStatus,
+      ip: updated.ip,
+      version: updated.version,
+      lastCheck: updated.lastCheck,
+      lastProbeError: updated.lastProbeError,
+    });
+    const diagnostics = {
+      ...(staged.diagnostics || {}),
+      wmiSession: {
+        status: result.connectivityState === 'online' ? 'PASS' : 'FAIL',
+        detail: result.error || 'WMI DCOM session validated',
+      },
+    };
+    return res.json({
+      success: true,
+      vmId: id,
+      vmName: vm.name,
+      vmUpdated: true,
+      status: updated.status,
+      failureCategory: staged.failureCategory || result.diagnostics?.failureCategory || null,
+      diagnostics,
+      connectivity: result.connectivityState || result.connectivity,
+      error: result.error || staged.error || null,
+      errorKind: result.errorKind || staged.errorKind || null,
+      data: updated,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: 'Diagnostics failed',
+      error: String(err.message || err).slice(0, 300),
+    });
+  }
 });
 
 module.exports = router;
