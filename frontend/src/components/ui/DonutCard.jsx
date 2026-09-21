@@ -35,7 +35,7 @@ export default function DonutCard({
                 strokeWidth={0}
               >
                 {segments.map((s) => (
-                  <Cell key={s.name} fill={s.color || '#2F3EA0'} />
+                  <Cell key={s.name} fill={s.color || '#0A84FF'} />
                 ))}
               </Pie>
               <Tooltip formatter={(v, name) => [v, name]} />

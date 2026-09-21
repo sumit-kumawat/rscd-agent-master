@@ -44,10 +44,66 @@
 
 **UI:** Username shown as read-only `RDSROOT`; password entered per action in Power tab and bulk power bar.
 
-## Local Users column (v2.0.2)
+## Local Users column (v2.0.2, removed from table v2.0.4)
 
-**Decision:** Main endpoints table shows `present / required` count (default 3: rdsroot, rdsmon, administrator).
+**Decision:** Local Users removed from the main endpoints table. Data remains in `VM.localUsers` and is visible in the endpoint lightbox **Local Users** tab.
 
-**Data source:** Cached on `VM.localUsers` after probe/provision; refreshed via lightbox Local Users tab or login provisioning.
+## Full endpoint sync + split refresh (v2.0.4)
 
-**Color:** Green (all present), amber (partial), red (none/unreachable).
+**Decision:** Separate **synced** (hourly / on-load / manual) from **live** (auto-refresh) data paths.
+
+- `endpointSync.runFullSync()` — WMI probe + overview/local-users/power per host; writes `VM.lastFullSyncAt`.
+- Hourly background job via `endpointSync.startHourlySync()`.
+- Dashboard synced widgets (`/api/dashboard/synced`) refresh on sync complete only.
+- Dashboard live widgets (`/api/dashboard/live`) refresh on `RefreshContext` tick + sockets.
+- Portal skeleton until first `sync:complete` on load.
+
+## Open portal access (v2.0.4)
+
+**Decision:** Remove portal-operator role, `OPERATOR_API_KEY` gates, and operator-only middleware. All features available after platform login.
+
+- `POST /api/system/login` replaces operator-session bootstrap.
+- Audit actor defaults to `user`.
+
+## Apple-style UI (v2.0.4)
+
+**Decision:** Adopt Apple-inspired design tokens in `frontend/src/index.css` and shared components under `frontend/src/components/ui/` (no separate `packages/ui` monorepo).
+
+- Lucide icons, stroke 1.5, sizes 16/20/24.
+- Compact spacing: 16px card padding/gaps, 16/24px page padding.
+- Soft neutrals, `#0A84FF` accent, 12px card radius.
+
+## Endpoints table simplification (v2.0.4)
+
+**Decision:** Table columns: Hostname, IP, OS, Health, Power. Row click opens lightbox. No Actions, Last Seen, or Local Users columns.
+
+## Never block portal on sync (v2.0.8)
+
+**Root cause:** `SyncContext` showed a full-page skeleton until `sync:complete`, and `POST /api/sync/full` awaited the entire fleet sync (hours for large inventories).
+
+**Fix:** Portal renders immediately; sync runs in background (`setImmediate` on backend). Non-blocking sync banner only. Status polled every 12s as Socket.IO fallback.
+
+## useApiQuery fetch contract (v2.0.8)
+
+**Decision:** Every tab and list uses `useApiQuery` — 15s timeout, 2 retries, cached `initialData` from MongoDB inventory, skeleton placeholders (not text spinners), inline error + Retry.
+
+**Rule:** UI must never stay on "Loading…" forever.
+
+## Bulk RSCD uninstall (v2.0.8)
+
+**Decision:** Bulk and single uninstall via `POST /api/endpoints/bulk-uninstall-rscd`. Uses fixed Administrator credential (`Helix@dm1n`), not VM-stored WMI creds or UI input.
+
+**UI:** Bulk action bar on Endpoints (multi-select) + lightbox RSCD tab. Confirmation dialog lists affected hosts.
+
+**Concurrency:** `RSCD_UNINSTALL_CONCURRENCY` (default 5). Per-endpoint phases streamed via `job:vm-phase`.
+
+## Anti-flicker rendering (v2.0.9)
+
+**Root causes fixed:**
+- Dashboard/Jobs/Logs set `loading=true` on every 30s tick → replaced with silent refetch via `useApiQuery`.
+- `vm:status` socket triggered full VM list reload → `patchData()` merges single-row updates.
+- Unstable `useApiQuery` deps (`initialData` object per render) → removed; lightbox uses `useMemo` + `mergeTabData`.
+- Sync banner layout shift → animated `sync-banner-slot` height transition.
+- Lightbox/modals inside page DOM → `Portal` to `document.body`.
+
+**Deleted:** `PortalSkeleton.jsx` (full-page sync gate — no longer used).

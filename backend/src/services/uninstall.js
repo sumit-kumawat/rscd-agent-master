@@ -10,7 +10,8 @@ const { isBelowVersion, DEFAULT_UNINSTALL_BELOW } = require('../utils/versionUti
 const { runPool } = require('../utils/pool');
 const { emitVmStatus } = require('./vmCheckQueue');
 
-const UNINSTALL_CONCURRENCY = parseInt(process.env.UNINSTALL_CONCURRENCY || '12', 10);
+const uninstallConfig = require('../config/uninstallConfig');
+const UNINSTALL_CONCURRENCY = uninstallConfig.concurrency;
 
 function createJobUpdater(jobId, io) {
   let chain = Promise.resolve();
@@ -140,9 +141,25 @@ class UninstallService {
       return;
     }
 
+    const emitVmPhase = (vmDoc, phase, extra = {}) => {
+      io?.emit('job:vm-phase', {
+        jobId,
+        vmId: vmDoc._id,
+        vm: vmDoc.name,
+        phase,
+        ...extra,
+      });
+    };
+
     const processVm = async (vm) => {
       const cancelled = (await Job.findById(jobId))?.status === 'cancelled';
-      if (cancelled) return;
+      if (cancelled) {
+        updater.stats.skipped++;
+        emitVmPhase(vm, 'cancelled');
+        await updater.log('info', 'Skipped — job cancelled before start', vm.name);
+        await updater.tick();
+        return;
+      }
 
       const doc = vm.wmiPassword !== undefined
         ? vm
@@ -175,6 +192,7 @@ class UninstallService {
         { new: true },
       );
       emitVmStatus(io, inProgressVm, { connectivityState: 'in_progress' });
+      emitVmPhase(vm, 'queued');
 
       try {
         const result = await winRemote.runUninstall(plain, {
@@ -183,9 +201,12 @@ class UninstallService {
             updater.vmStep(plain.name, progress);
             io?.emit('job:vm-step', { jobId, vm: plain.name, vmId: vm._id, ...progress });
           },
+          onPhase: ({ phase, result: phaseResult, rebootRequired }) => {
+            emitVmPhase(vm, phase, { result: phaseResult, rebootRequired });
+          },
         });
 
-        if (result.alreadyRemoved) {
+        if (result.alreadyRemoved || result.notPresent) {
           updater.stats.skipped++;
           await VM.findByIdAndUpdate(vm._id, {
             $set: { agentStatus: 'removed', version: 'removed', installRoot: result.installRoot },
@@ -205,9 +226,13 @@ class UninstallService {
           await VM.findByIdAndUpdate(vm._id, { status: 'online' });
         } else if (result.success) {
           updater.stats.success++;
-          await VM.findByIdAndUpdate(vm._id, {
-            $set: { agentStatus: 'removed', version: 'removed', installRoot: result.installRoot },
-          });
+          const vmUpdates = {
+            agentStatus: 'removed',
+            version: 'removed',
+            installRoot: result.installRoot,
+          };
+          if (result.rebootRequired) vmUpdates.rebootRequired = true;
+          await VM.findByIdAndUpdate(vm._id, { $set: vmUpdates });
           const { vm: afterVm, result: probe } = await connectivity.checkAndUpdate(
             await VM.findById(vm._id).select('+wmiPassword'),
           );

@@ -1,69 +1,104 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Eye, RefreshCw, XCircle, Loader2 } from 'lucide-react';
+import { RefreshCw, Loader2 } from 'lucide-react';
 import api from './api';
 import { onSocket } from './socket';
 import { useToast } from './components/Toast';
 import { useSearch } from './context/SearchContext';
 import { useRefresh } from './context/RefreshContext';
+import { useApiQuery } from './hooks/useApiQuery';
 import { patchJobList } from './utils/jobSockets';
+import { TableSkeleton } from './components/ui/TabSkeletons';
 
 function Badge({ status }) {
   const m = { completed: 'badge-online', failed: 'badge-offline', running: 'badge-progress', pending: 'badge-excluded', cancelled: 'badge-excluded' };
   return <span className={`badge ${m[status] || 'badge-excluded'}`}>{status}</span>;
 }
 
+const JobRow = memo(function JobRow({ job, onOpen }) {
+  const running = ['pending', 'running'].includes(job.status);
+  const progress = job.progress || 0;
+  return (
+    <tr
+      className={`data-row ${running ? 'row-running' : ''}`}
+      onClick={() => onOpen(job._id)}
+    >
+      <td className="col-host">{job.name}</td>
+      <td className="col-status">
+        <Badge status={job.status} />
+        {running && <Loader2 className="spin row-running-icon" size={12} />}
+      </td>
+      <td>
+        <div className="progress-inline">
+          <div className="progress-track">
+            <div
+              className={`progress-fill ${running ? 'progress-fill-live' : ''}`}
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          <span className="progress-label">{progress}%</span>
+        </div>
+      </td>
+      <td className="col-results">
+        ✓{job.statistics?.success || 0} ✗{job.statistics?.failed || 0} ⊘{job.statistics?.skipped || 0}
+      </td>
+      <td className="col-date">{new Date(job.createdAt).toLocaleString()}</td>
+    </tr>
+  );
+});
+
 export default function JobsPage() {
-  const [jobs, setJobs] = useState([]);
-  const [loading, setLoading] = useState(true);
   const { search } = useSearch();
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const { tick } = useRefresh();
   const nav = useNavigate();
-  const toast = useToast();
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(t);
   }, [search]);
 
-  const load = () => {
-    setLoading(true);
-    const q = debouncedSearch ? `?search=${encodeURIComponent(debouncedSearch)}` : '';
-    api.get(`/jobs${q}`).then((r) => setJobs(r.data || [])).catch(console.error).finally(() => setLoading(false));
-  };
-
-  useEffect(() => { load(); }, [debouncedSearch, tick]);
+  const {
+    data: jobs = [],
+    isLoading,
+    isError,
+    error,
+    reload,
+    silentReload,
+    patchData,
+  } = useApiQuery(
+    async ({ timeout, signal }) => {
+      const q = debouncedSearch ? `?search=${encodeURIComponent(debouncedSearch)}` : '';
+      const r = await api.get(`/jobs${q}`, { timeout, signal });
+      return r.data || [];
+    },
+    [debouncedSearch],
+    { initialData: [] },
+  );
 
   useEffect(() => {
-    const patch = (data) => setJobs((prev) => patchJobList(prev, data));
+    silentReload();
+  }, [tick, silentReload]);
+
+  useEffect(() => {
+    const patch = (data) => patchData((prev) => patchJobList(prev, data));
     const off1 = onSocket('job:progress', patch);
     const off2 = onSocket('job:started', patch);
     const off3 = onSocket('job:completed', (data) => {
       patch({ ...data, status: data.job?.status || 'completed', progress: 100 });
-      load();
     });
     const off4 = onSocket('job:cancelled', (data) => patch({ ...data, status: 'cancelled' }));
     return () => { off1(); off2(); off3(); off4(); };
-  }, []);
+  }, [patchData]);
 
-  const cancelJob = async (job) => {
-    if (!confirm(`Cancel job "${job.name}"?`)) return;
-    try {
-      await api.post(`/jobs/${job._id}/cancel`, {});
-      setJobs((prev) => patchJobList(prev, { jobId: job._id, status: 'cancelled' }));
-      toast('Job cancelled', 'info');
-    } catch (e) {
-      toast(e.message, 'error');
-    }
-  };
+  const loading = isLoading && !jobs.length;
 
   return (
     <div className="page">
       <div className="toolbar">
         <span className="page-title">Jobs</span>
         <div className="toolbar-right">
-          <button className="btn btn-outline" onClick={load}><RefreshCw size={14} /> Refresh</button>
+          <button className="btn btn-outline" onClick={() => reload(true)}><RefreshCw size={14} /> Refresh</button>
           <Link to="/jobs/new" className="btn btn-primary">New Job</Link>
         </div>
       </div>
@@ -76,50 +111,18 @@ export default function JobsPage() {
               <th>Progress</th>
               <th>Results</th>
               <th>Created</th>
-              <th className="col-actions">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6} className="empty"><Loader2 className="spin" size={18} /> Loading…</td></tr>
+              <tr><td colSpan={5}><TableSkeleton rows={5} cols={4} /></td></tr>
+            ) : isError ? (
+              <tr><td colSpan={5} className="empty">{error} — <button className="btn btn-outline btn-sm" onClick={() => reload(false)}>Retry</button></td></tr>
             ) : jobs.length === 0 ? (
-              <tr><td colSpan={6} className="empty">No jobs yet</td></tr>
-            ) : jobs.map((j) => {
-              const running = ['pending', 'running'].includes(j.status);
-              const progress = j.progress || 0;
-              return (
-                <tr
-                  key={j._id}
-                  className={`data-row ${running ? 'row-running' : ''}`}
-                  onClick={() => nav(`/jobs/${j._id}`)}
-                >
-                  <td className="col-host">{j.name}</td>
-                  <td className="col-status">
-                    <Badge status={j.status} />
-                    {running && <Loader2 className="spin row-running-icon" size={12} />}
-                  </td>
-                  <td>
-                    <div className="progress-inline">
-                      <div className="progress-track">
-                        <div
-                          className={`progress-fill ${running ? 'progress-fill-live' : ''}`}
-                          style={{ width: `${progress}%` }}
-                        />
-                      </div>
-                      <span className="progress-label">{progress}%</span>
-                    </div>
-                  </td>
-                  <td className="col-results">
-                    ✓{j.statistics?.success || 0} ✗{j.statistics?.failed || 0} ⊘{j.statistics?.skipped || 0}
-                  </td>
-                  <td className="col-date">{new Date(j.createdAt).toLocaleString()}</td>
-                  <td className="col-actions" onClick={(e) => e.stopPropagation()}>
-                    <button className="btn btn-outline btn-sm" onClick={() => nav(`/jobs/${j._id}`)}><Eye size={14} /> View</button>
-                    {running && <button className="btn btn-danger btn-sm" onClick={() => cancelJob(j)}><XCircle size={14} /></button>}
-                  </td>
-                </tr>
-              );
-            })}
+              <tr><td colSpan={5} className="empty">No jobs yet</td></tr>
+            ) : jobs.map((j) => (
+              <JobRow key={j._id} job={j} onOpen={(id) => nav(`/jobs/${id}`)} />
+            ))}
           </tbody>
         </table>
       </div>

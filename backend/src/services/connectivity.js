@@ -69,7 +69,13 @@ async function checkAndUpdate(vm, options = {}) {
     }
   } else {
     updates.status = mapConnectivityToStatus(probe, plain);
-    if (['unreachable', 'timeout', 'offline'].includes(probe.connectivityState)) {
+    const offStates = ['unreachable', 'timeout', 'offline', 'dns_failed'];
+    const onStates = ['auth_failed', 'permission_denied', 'wmi_unavailable', 'relay_unavailable', 'in_progress'];
+    if (offStates.includes(probe.connectivityState)) {
+      updates.powerState = 'off';
+    } else if (onStates.includes(probe.connectivityState)) {
+      updates.powerState = 'on';
+    } else if (updates.status === 'offline') {
       updates.powerState = 'off';
     }
     updates.wmiReachable = false;

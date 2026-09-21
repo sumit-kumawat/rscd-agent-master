@@ -67,7 +67,7 @@ export default function GlobalSearch() {
 
   return (
     <div className="global-search" ref={wrapRef}>
-      <Search size={16} className="global-search-icon" aria-hidden />
+      <Search size={16} strokeWidth={1.5} className="global-search-icon" aria-hidden />
       <input
         className="input global-search-input"
         placeholder="Search hosts, jobs, logs…"

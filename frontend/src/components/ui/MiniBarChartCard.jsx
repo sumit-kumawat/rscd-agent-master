@@ -1,7 +1,7 @@
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import CardShell, { CardEmpty, CardLoading } from './CardShell';
 
-const PRIMARY = '#2F3EA0';
+const PRIMARY = '#0A84FF';
 
 export default function MiniBarChartCard({ title, subtitle, items, loading, empty }) {
   if (loading) {

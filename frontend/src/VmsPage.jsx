@@ -1,14 +1,21 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
-import { Link, useLocation } from 'react-router-dom';
 import {
-  RefreshCw, Plus, Upload, Search, Trash2, Power, Loader2,
+  memo, useEffect, useState, useRef, useCallback,
+} from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import {
+  RefreshCw, Plus, Upload, Search, Trash2, Power,
 } from 'lucide-react';
 import api from './api';
 import { onSocket } from './socket';
 import { useToast } from './components/Toast';
 import { useSearch } from './context/SearchContext';
 import { useRefresh } from './context/RefreshContext';
-import EndpointLightbox, { LocalUsersCell, PowerBadge } from './components/EndpointLightbox';
+import EndpointLightbox, { PowerBadge, RscdAgentBadge } from './components/EndpointLightbox';
+import { useLayoutFilter } from './Layout';
+import { useApiQuery } from './hooks/useApiQuery';
+import BulkUninstallDialog from './components/BulkUninstallDialog';
+import Portal from './components/Portal';
+import { TableSkeleton } from './components/ui/TabSkeletons';
 
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 
@@ -21,18 +28,24 @@ function isRemoved(vm) {
   return vm.agentStatus === 'removed' || vm.version === 'removed';
 }
 
-function healthLabel(vm) {
-  if (vm.excluded) return 'excluded';
-  if (vm.status === 'in_progress') return 'busy';
-  if (vm.connectivityState === 'online' || vm.status === 'online') return 'healthy';
-  if (vm.connectivityState) return vm.connectivityState;
-  return vm.status || 'unknown';
-}
-
-function HealthBadge({ vm }) {
-  const h = healthLabel(vm);
-  const cls = h === 'healthy' ? 'badge-online' : h === 'busy' ? 'badge-progress' : 'badge-offline';
-  return <span className={`badge ${cls}`}>{h}</span>;
+function patchVmList(list, payload) {
+  if (!payload?.vmId || !Array.isArray(list)) return list;
+  const idx = list.findIndex((v) => String(v._id) === String(payload.vmId));
+  if (idx === -1) return list;
+  const next = [...list];
+  next[idx] = {
+    ...next[idx],
+    status: payload.status ?? next[idx].status,
+    connectivity: payload.connectivity ?? next[idx].connectivity,
+    connectivityState: payload.connectivityState ?? next[idx].connectivityState,
+    authStatus: payload.authStatus ?? next[idx].authStatus,
+    agentStatus: payload.agentStatus ?? next[idx].agentStatus,
+    ip: payload.ip ?? next[idx].ip,
+    version: payload.version ?? next[idx].version,
+    lastCheck: payload.lastCheck ?? next[idx].lastCheck,
+    powerState: payload.powerState ?? next[idx].powerState,
+  };
+  return next;
 }
 
 const emptyForm = () => ({
@@ -77,40 +90,69 @@ function VmModal({ vm, onClose, onSaved, onChecking }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ margin: '0 0 14px', fontSize: 16 }}>{isNew ? 'Add VM' : 'Edit VM'}</h3>
-        <label className="field"><span>Hostname / FQDN</span>
-          <input className="input" value={form.name} onChange={(e) => set('name', e.target.value)} /></label>
-        <label className="field"><span>IP Address (optional)</span>
-          <input className="input" value={form.ip} onChange={(e) => set('ip', e.target.value)} /></label>
-        <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <input type="checkbox" checked={form.excluded} onChange={(e) => set('excluded', e.target.checked)} />
-          <span>Excluded from jobs</span>
-        </label>
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button className="btn btn-outline" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save'}</button>
+    <Portal>
+      <div className="modal-backdrop" onClick={onClose}>
+        <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <h3 style={{ margin: '0 0 14px', fontSize: 16 }}>{isNew ? 'Add VM' : 'Edit VM'}</h3>
+          <label className="field"><span>Hostname / FQDN</span>
+            <input className="input" value={form.name} onChange={(e) => set('name', e.target.value)} /></label>
+          <label className="field"><span>IP Address (optional)</span>
+            <input className="input" value={form.ip} onChange={(e) => set('ip', e.target.value)} /></label>
+          <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" checked={form.excluded} onChange={(e) => set('excluded', e.target.checked)} />
+            <span>Excluded from jobs</span>
+          </label>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button className="btn btn-outline" onClick={onClose}>Cancel</button>
+            <button className="btn btn-primary" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save'}</button>
+          </div>
         </div>
       </div>
-    </div>
+    </Portal>
   );
 }
 
+const VmRow = memo(function VmRow({
+  vm, selected, isActive, onOpen, onToggleSelect,
+}) {
+  return (
+    <tr
+      className={`data-row ${isActive ? 'row-menu-active' : ''}`}
+      onClick={() => onOpen(vm)}
+    >
+      <td className="col-check" onClick={(e) => e.stopPropagation()}>
+        <input
+          type="checkbox"
+          checked={selected}
+          disabled={isRemoved(vm)}
+          onChange={() => onToggleSelect(vm._id)}
+        />
+      </td>
+      <td className="col-host">{vm.name}</td>
+      <td className="col-ip mono">{displayIp(vm.ip)}</td>
+      <td>{vm.osVersion || vm.os || 'Windows'}</td>
+      <td className="col-status"><RscdAgentBadge vm={vm} /></td>
+      <td className="col-status"><PowerBadge vm={vm} /></td>
+    </tr>
+  );
+});
+
 export default function VmsPage() {
   const location = useLocation();
-  const [vms, setVms] = useState([]);
+  const nav = useNavigate();
+  const headerFilter = useLayoutFilter();
   const { search } = useSearch();
   const { tick } = useRefresh();
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [connFilter, setConnFilter] = useState('');
-  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState([]);
   const [modal, setModal] = useState(null);
   const [lightbox, setLightbox] = useState(null);
   const [lightboxTab, setLightboxTab] = useState('overview');
   const [bulkPowerAction, setBulkPowerAction] = useState('');
   const [bulkPassword, setBulkPassword] = useState('');
+  const [bulkUninstallOpen, setBulkUninstallOpen] = useState(false);
+  const [bulkUninstallLoading, setBulkUninstallLoading] = useState(false);
   const fileRef = useRef(null);
   const toast = useToast();
 
@@ -119,60 +161,59 @@ export default function VmsPage() {
     return () => clearTimeout(t);
   }, [search]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
+  const {
+    data: vms = [],
+    isLoading,
+    isError,
+    error,
+    reload,
+    silentReload,
+    patchData,
+  } = useApiQuery(
+    async ({ timeout, signal }) => {
       const params = new URLSearchParams();
       if (debouncedSearch) params.set('search', debouncedSearch);
-      if (connFilter) params.set('status', connFilter);
-      const v = await api.get(`/vms?${params}`);
-      setVms(v.data || []);
-    } catch (e) {
-      toast(e.message, 'error');
-    } finally {
-      setLoading(false);
-    }
-  }, [debouncedSearch, connFilter, toast]);
+      const statusFilter = connFilter || headerFilter;
+      if (statusFilter) params.set('status', statusFilter);
+      const v = await api.get(`/vms?${params}`, { timeout, signal });
+      return v.data || [];
+    },
+    [debouncedSearch, connFilter, headerFilter],
+    { initialData: [] },
+  );
 
-  useEffect(() => { load(); }, [load, tick]);
+  const loading = isLoading && !vms.length;
 
-  const openLightbox = (vm, tab = 'overview') => {
+  useEffect(() => {
+    silentReload();
+  }, [tick, silentReload]);
+
+  const openLightbox = useCallback((vm, tab = 'overview') => {
     setLightboxTab(tab);
     setLightbox(vm);
-  };
+  }, []);
 
   useEffect(() => {
     const openId = location.state?.openVmId;
     if (!openId || !vms.length) return;
     const vm = vms.find((v) => String(v._id) === String(openId));
     if (vm) openLightbox(vm);
-  }, [location.state?.openVmId, vms]);
+  }, [location.state?.openVmId, vms, openLightbox]);
 
-  const closeLightbox = () => {
+  const closeLightbox = useCallback(() => {
     setLightbox(null);
     setLightboxTab('overview');
-  };
+  }, []);
 
-  useEffect(() => onSocket('vm:status', (d) => {
-    if (!d?.vmId) return;
-    setVms((prev) => prev.map((vm) => String(vm._id) === String(d.vmId)
-      ? {
-        ...vm,
-        status: d.status,
-        connectivityState: d.connectivityState,
-        authStatus: d.authStatus,
-        agentStatus: d.agentStatus,
-        ip: d.ip,
-        version: d.version,
-        lastCheck: d.lastCheck,
-        powerState: d.powerState || vm.powerState,
-        lastSeenAt: d.lastSeenAt || vm.lastSeenAt,
-        localUsers: d.localUsers || vm.localUsers,
-      }
-      : vm));
-  }), []);
+  useEffect(() => onSocket('vm:status', (payload) => {
+    patchData((list) => patchVmList(list, payload));
+    setLightbox((lb) => {
+      if (!lb || String(lb._id) !== String(payload.vmId)) return lb;
+      return { ...lb, ...payload, _id: lb._id };
+    });
+  }), [patchData]);
 
-  useEffect(() => onSocket('vms:deleted', () => load()), [load]);
+  useEffect(() => onSocket('vms:deleted', () => reload(true)), [reload]);
 
   const importFile = async (e) => {
     const file = e.target.files?.[0];
@@ -192,11 +233,32 @@ export default function VmsPage() {
         return;
       }
       toast(`Imported ${r.created} new`, 'info');
-      load();
+      reload(true);
     } catch (err) {
       toast(err.message, 'error');
     }
     e.target.value = '';
+  };
+
+  const selectedVms = vms.filter((vm) => selected.includes(vm._id));
+  const canBulkUninstall = selectedVms.some((vm) => !isRemoved(vm) && !vm.excluded);
+
+  const bulkUninstall = async () => {
+    const targets = selectedVms.filter((vm) => !isRemoved(vm) && !vm.excluded);
+    if (!targets.length) return;
+    setBulkUninstallLoading(true);
+    try {
+      const r = await api.post('/endpoints/bulk-uninstall-rscd', { endpointIds: targets.map((v) => v._id) });
+      const job = r.data || r.job;
+      toast(`Uninstall job started for ${targets.length} endpoint(s)`, 'info');
+      setBulkUninstallOpen(false);
+      setSelected([]);
+      if (job?._id) nav(`/jobs/${job._id}`);
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setBulkUninstallLoading(false);
+    }
   };
 
   const bulkPower = async () => {
@@ -206,16 +268,15 @@ export default function VmsPage() {
       const r = await api.post('/vms/bulk-power', { ids: selected, action: bulkPowerAction, password: bulkPassword });
       const ok = r.results?.filter((x) => x.ok).length || 0;
       toast(`Power action sent to ${ok}/${selected.length} endpoints`, ok ? 'success' : 'warning');
-      load();
+      silentReload();
     } catch (e) {
       toast(e.message, 'error');
     }
   };
 
-  const lastSeen = (vm) => {
-    const d = vm.lastSeenAt || vm.lastCheck;
-    return d ? new Date(d).toLocaleString() : '—';
-  };
+  const toggleSelect = useCallback((id) => {
+    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  }, []);
 
   return (
     <div className="page">
@@ -240,6 +301,14 @@ export default function VmsPage() {
             <button className="btn btn-outline btn-sm" disabled={!bulkPowerAction || !bulkPassword} onClick={bulkPower}>
               <Power size={14} /> Apply ({selected.length})
             </button>
+            <button
+              type="button"
+              className="btn btn-danger btn-sm"
+              disabled={!canBulkUninstall}
+              onClick={() => setBulkUninstallOpen(true)}
+            >
+              <Trash2 size={14} strokeWidth={1.5} /> Uninstall RSCD ({selected.length})
+            </button>
           </>
         )}
         <div className="toolbar-right">
@@ -247,7 +316,7 @@ export default function VmsPage() {
           <button className="btn btn-outline" onClick={() => setModal('new')}><Plus size={14} /> Add</button>
           <button className="btn btn-outline" onClick={() => fileRef.current?.click()}><Upload size={14} /> Import</button>
           <button className="btn btn-outline" onClick={async () => { await api.post('/vms/check-all', {}); toast('Check started', 'info'); }}><Search size={14} /> Check All</button>
-          <button className="btn btn-outline" onClick={load}><RefreshCw size={14} /> Refresh</button>
+          <button className="btn btn-outline" onClick={() => reload(true)}><RefreshCw size={14} /> Refresh</button>
           <Link to="/jobs/new" className="btn btn-primary">New Job</Link>
         </div>
       </div>
@@ -263,41 +332,26 @@ export default function VmsPage() {
               <th>Hostname</th>
               <th>IP</th>
               <th>OS</th>
-              <th>Health</th>
+              <th>RSCD Agents</th>
               <th>Power</th>
-              <th>Local Users</th>
-              <th>Last Seen</th>
-              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={9} className="empty"><Loader2 className="spin" size={18} /> Loading…</td></tr>
+              <tr><td colSpan={6}><TableSkeleton rows={6} cols={5} /></td></tr>
+            ) : isError ? (
+              <tr><td colSpan={6} className="empty">{error} — <button className="btn btn-outline btn-sm" onClick={() => reload(false)}>Retry</button></td></tr>
             ) : vms.length === 0 ? (
-              <tr><td colSpan={9} className="empty">No endpoints — add or import hosts to get started</td></tr>
+              <tr><td colSpan={6} className="empty">No endpoints — add or import hosts to get started</td></tr>
             ) : vms.map((vm) => (
-              <tr
+              <VmRow
                 key={vm._id}
-                className={`data-row ${lightbox?._id === vm._id ? 'row-menu-active' : ''}`}
-                onClick={() => openLightbox(vm)}
-              >
-                <td className="col-check" onClick={(e) => e.stopPropagation()}>
-                  <input type="checkbox" checked={selected.includes(vm._id)} disabled={isRemoved(vm)}
-                    onChange={() => setSelected((s) => s.includes(vm._id) ? s.filter((x) => x !== vm._id) : [...s, vm._id])} />
-                </td>
-                <td className="col-host">{vm.name}</td>
-                <td className="col-ip mono">{displayIp(vm.ip)}</td>
-                <td>{vm.osVersion || vm.os || 'Windows'}</td>
-                <td className="col-status"><HealthBadge vm={vm} /></td>
-                <td className="col-status"><PowerBadge state={vm.powerState} /></td>
-                <td className="col-local-users" onClick={(e) => e.stopPropagation()}>
-                  <LocalUsersCell vm={vm} onOpen={openLightbox} />
-                </td>
-                <td className="col-date">{lastSeen(vm)}</td>
-                <td className="col-actions" onClick={(e) => e.stopPropagation()}>
-                  <button className="btn btn-outline btn-sm" onClick={() => openLightbox(vm)}>Open</button>
-                </td>
-              </tr>
+                vm={vm}
+                selected={selected.includes(vm._id)}
+                isActive={lightbox?._id === vm._id}
+                onOpen={openLightbox}
+                onToggleSelect={toggleSelect}
+              />
             ))}
           </tbody>
         </table>
@@ -307,9 +361,20 @@ export default function VmsPage() {
         <VmModal
           vm={modal === 'new' ? null : modal}
           onClose={() => setModal(null)}
-          onSaved={() => load()}
+          onSaved={() => reload(true)}
           onChecking={() => {}}
         />
+      )}
+
+      {bulkUninstallOpen && (
+        <Portal>
+          <BulkUninstallDialog
+            endpoints={selectedVms.filter((vm) => !isRemoved(vm) && !vm.excluded)}
+            onConfirm={bulkUninstall}
+            onClose={() => setBulkUninstallOpen(false)}
+            loading={bulkUninstallLoading}
+          />
+        </Portal>
       )}
 
       {lightbox && (
@@ -317,7 +382,7 @@ export default function VmsPage() {
           vm={lightbox}
           initialTab={lightboxTab}
           onClose={closeLightbox}
-          onVmUpdated={load}
+          onVmUpdated={() => silentReload()}
         />
       )}
     </div>

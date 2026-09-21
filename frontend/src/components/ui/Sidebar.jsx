@@ -25,14 +25,14 @@ export default function Sidebar({ collapsed, onToggle, onRefresh }) {
             className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}
             title={collapsed ? label : undefined}
           >
-            <Icon size={18} strokeWidth={2} />
+            <Icon size={20} strokeWidth={1.5} />
             {!collapsed && <span>{label}</span>}
           </NavLink>
         ))}
       </nav>
       <div className="sidebar-footer">
         <button type="button" className="sidebar-collapse-btn" onClick={onToggle} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
-          {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+          {collapsed ? <ChevronRight size={16} strokeWidth={1.5} /> : <ChevronLeft size={16} strokeWidth={1.5} />}
           {!collapsed && <span>Collapse</span>}
         </button>
       </div>

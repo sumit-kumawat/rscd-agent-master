@@ -1,7 +1,7 @@
 const { resolveActor } = require('../utils/audit');
 
 function attachActor(req, res, next) {
-  req.operatorActor = resolveActor(req);
+  req.userActor = resolveActor(req);
   next();
 }
 

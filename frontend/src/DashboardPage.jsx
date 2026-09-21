@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from './api';
-import { onSocket } from './socket';
 import { useRefresh } from './context/RefreshContext';
+import { useSync } from './context/SyncContext';
+import { useLayoutFilter } from './Layout';
+import { useApiQuery } from './hooks/useApiQuery';
 import StatCard from './components/ui/StatCard';
 import TrendChartCard from './components/ui/TrendChartCard';
 import DonutCard from './components/ui/DonutCard';
@@ -10,33 +12,38 @@ import ListCard from './components/ui/ListCard';
 import MiniProgressCard from './components/ui/MiniProgressCard';
 import MiniBarChartCard from './components/ui/MiniBarChartCard';
 
-export default function DashboardPage({ filter = '' }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+export default function DashboardPage() {
+  const filter = useLayoutFilter();
   const { tick } = useRefresh();
+  const { syncedTick } = useSync();
   const nav = useNavigate();
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const q = filter ? `?status=${encodeURIComponent(filter)}` : '';
-      const r = await api.get(`/dashboard${q}`);
-      setData(r.data ?? r);
-    } catch {
-      setData(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [filter]);
+  const q = useMemo(
+    () => (filter ? `?status=${encodeURIComponent(filter)}` : ''),
+    [filter],
+  );
 
-  useEffect(() => { load(); }, [load, tick]);
-  useEffect(() => onSocket('vm:status', load), [load]);
-  useEffect(() => onSocket('monitor:cycle', load), [load]);
-  useEffect(() => onSocket('job:completed', load), [load]);
-  useEffect(() => onSocket('log:activity', load), [load]);
+  const syncedQuery = useApiQuery(
+    async ({ timeout, signal }) => {
+      const r = await api.get(`/dashboard/synced${q}`, { timeout, signal });
+      return r.data ?? r;
+    },
+    [q, syncedTick],
+  );
 
-  const stats = data?.stats;
-  const hasData = data && stats?.totalEndpoints?.value > 0;
+  const liveQuery = useApiQuery(
+    async ({ timeout, signal }) => {
+      const r = await api.get(`/dashboard/live${q}`, { timeout, signal });
+      return r.data ?? r;
+    },
+    [q, tick],
+  );
+
+  const synced = syncedQuery.data;
+  const live = liveQuery.data;
+  const stats = synced?.stats;
+  const liveStats = live?.stats;
+  const hasData = stats?.totalEndpoints?.value > 0;
 
   return (
     <div className="dashboard-page">
@@ -44,68 +51,67 @@ export default function DashboardPage({ filter = '' }) {
         <div className="dashboard-col-narrow">
           <StatCard
             title="Total Endpoints"
-            subtitle="Managed Windows hosts"
+            subtitle="From last full sync"
             value={stats?.totalEndpoints?.value}
             unit={stats?.totalEndpoints?.unit}
-            loading={loading}
+            loading={syncedQuery.isLoading}
             empty={!hasData}
           />
           <StatCard
             title="Online Now"
-            subtitle="WMI reachable"
-            value={stats?.onlineEndpoints?.value}
-            unit={stats?.onlineEndpoints?.unit}
-            loading={loading}
-            empty={!hasData}
+            subtitle="Live agent status"
+            value={liveStats?.onlineNow?.value}
+            unit={liveStats?.onlineNow?.unit}
+            loading={liveQuery.isLoading}
+            empty={!hasData && liveStats?.onlineNow?.value == null}
           />
         </div>
         <div className="dashboard-col-wide">
           <TrendChartCard
             title="Connectivity Trend"
-            subtitle="Monitor cycles & audit activity (7 days)"
-            data={data?.trend}
-            legend={data?.trend?.legend}
-            loading={loading}
-            empty={!data?.trend?.series?.length}
+            subtitle="Synced fleet history (7 days)"
+            data={synced?.trend}
+            legend={synced?.trend?.legend}
+            loading={syncedQuery.isLoading}
+            empty={!synced?.trend?.series?.length}
           />
         </div>
-
         <div className="dashboard-col-donut">
           <DonutCard
             title="Fleet Status"
-            subtitle="Connectivity distribution"
-            segments={data?.donut?.segments}
-            centerPercent={data?.donut?.centerPercent ?? 0}
-            caption={data?.donut?.caption}
-            legend={data?.donut?.legend}
-            loading={loading}
-            empty={!data?.donut?.segments?.length}
+            subtitle="Last sync snapshot"
+            segments={synced?.donut?.segments}
+            centerPercent={synced?.donut?.centerPercent ?? 0}
+            caption={synced?.donut?.caption}
+            legend={synced?.donut?.legend}
+            loading={syncedQuery.isLoading}
+            empty={!synced?.donut?.segments?.length}
           />
         </div>
         <div className="dashboard-col-list">
           <ListCard
-            title={data?.list?.title || 'Needs attention'}
-            subtitle="Offline or incomplete local users"
-            items={data?.list?.items}
-            loading={loading}
-            empty={!data?.list?.items?.length}
+            title={live?.list?.title || 'Needs attention'}
+            subtitle="Live health & power"
+            items={live?.list?.items}
+            loading={liveQuery.isLoading}
+            empty={!live?.list?.items?.length}
             onItemClick={(item) => nav('/vms', { state: { openVmId: item.id } })}
           />
         </div>
         <div className="dashboard-col-stack">
           <MiniProgressCard
             title="Fleet Progress"
-            subtitle="Provisioning & compliance"
-            items={data?.progress?.items}
-            loading={loading}
-            empty={!data?.progress?.items?.length}
+            subtitle="Synced compliance metrics"
+            items={synced?.progress?.items}
+            loading={syncedQuery.isLoading}
+            empty={!synced?.progress?.items?.length}
           />
           <MiniBarChartCard
             title="Job Activity"
-            subtitle={data?.bars?.label || 'Jobs created'}
-            items={data?.bars?.items}
-            loading={loading}
-            empty={!data?.bars?.items?.length}
+            subtitle={live?.bars?.label || 'Live job throughput'}
+            items={live?.bars?.items}
+            loading={liveQuery.isLoading}
+            empty={!live?.bars?.items?.length}
           />
         </div>
       </div>

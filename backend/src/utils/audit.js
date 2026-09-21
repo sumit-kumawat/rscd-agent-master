@@ -26,9 +26,9 @@ function maskSecrets(text) {
 function resolveActor(req) {
   if (!req) return 'system';
   return req.headers['x-actor']
-    || req.headers['x-operator-name']
-    || (req.operatorActor)
-    || 'portal-operator';
+    || req.headers['x-user-name']
+    || (req.userActor)
+    || 'user';
 }
 
 function resolveTenant() {

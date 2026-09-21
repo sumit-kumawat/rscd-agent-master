@@ -1,4 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import {
+  createContext, useCallback, useContext, useEffect, useMemo, useState,
+} from 'react';
 
 const RefreshContext = createContext({
   tick: 0,
@@ -21,10 +23,12 @@ export function RefreshProvider({ children }) {
     return () => clearInterval(t);
   }, [autoRefresh, intervalSec, refresh]);
 
+  const value = useMemo(() => ({
+    tick, refresh, autoRefresh, setAutoRefresh, intervalSec, setIntervalSec,
+  }), [tick, refresh, autoRefresh, intervalSec]);
+
   return (
-    <RefreshContext.Provider value={{
-      tick, refresh, autoRefresh, setAutoRefresh, intervalSec, setIntervalSec,
-    }}>
+    <RefreshContext.Provider value={value}>
       {children}
     </RefreshContext.Provider>
   );

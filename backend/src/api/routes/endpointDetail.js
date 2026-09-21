@@ -3,8 +3,6 @@ const VM = require('../../models/VM');
 const activityLog = require('../../services/activityLog');
 const endpointOps = require('../../services/endpointOps');
 const audit = require('../../utils/audit');
-const { requireOperator } = require('../../middleware/operatorAuth');
-
 const router = express.Router({ mergeParams: true });
 const io = (req) => req.app.get('io');
 
@@ -118,7 +116,7 @@ router.post('/refresh-local-users', async (req, res) => {
   }
 });
 
-router.post('/power', requireOperator, async (req, res) => {
+router.post('/power', async (req, res) => {
   const vm = await loadVm(req.params.id);
   if (!vm) return res.status(404).json({ success: false, message: 'Not found' });
   const { action, password } = req.body;

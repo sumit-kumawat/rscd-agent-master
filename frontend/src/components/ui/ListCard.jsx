@@ -27,7 +27,7 @@ export default function ListCard({ title, subtitle, items, loading, empty, onIte
               className="dash-list-row"
               onClick={() => onItemClick?.(item)}
             >
-              <span className="dash-list-icon"><Server size={16} /></span>
+              <span className="dash-list-icon"><Server size={16} strokeWidth={1.5} /></span>
               <span className="dash-list-text">
                 <span className="dash-list-label">{item.label}</span>
                 <span className="dash-list-sub">{item.sub}</span>

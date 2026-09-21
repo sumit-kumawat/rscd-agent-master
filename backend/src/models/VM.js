@@ -50,6 +50,7 @@ const vmSchema = new mongoose.Schema(
       }],
     },
     lastCheck: { type: Date, default: Date.now },
+    lastFullSyncAt: { type: Date, index: true },
     lastProbeError: { type: String, default: '' },
     wmiDomain: { type: String, default: '' },
     wmiUsername: { type: String, default: '' },
@@ -57,6 +58,7 @@ const vmSchema = new mongoose.Schema(
     wmiReachable: { type: Boolean, default: false },
     authStatus: { type: String, enum: ['allowed', 'denied', 'unknown'], default: 'unknown', index: true },
     connectivityMethod: { type: String, enum: ['wmi', 'none'], default: 'none' },
+    rebootRequired: { type: Boolean, default: false },
     excluded: { type: Boolean, default: false },
   },
   { timestamps: true }

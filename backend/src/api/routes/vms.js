@@ -43,8 +43,6 @@ router.post('/bulk-power', requireOperator, async (req, res) => {
   res.json({ success: true, results });
 });
 
-router.use('/:id', endpointDetail);
-
 router.get('/', async (req, res) => {
   const { search, status, agentStatus } = req.query;
   const query = { osType: 'windows' };
@@ -230,6 +228,19 @@ router.delete('/:id', requireOperator, async (req, res) => {
   res.json({ success: true, message: 'Deleted', ...result });
 });
 
+router.post('/bulk-uninstall-rscd', async (req, res) => {
+  const endpointIds = req.body?.endpointIds || req.body?.ids || req.body?.vmIds;
+  if (!Array.isArray(endpointIds) || !endpointIds.length) {
+    return res.status(400).json({ success: false, message: 'endpointIds array is required' });
+  }
+  const job = await uninstall.createJob({
+    name: `Bulk RSCD uninstall (${endpointIds.length} endpoints)`,
+    vmIds: endpointIds,
+    filter: { useBelowVersion: false },
+  }, io(req));
+  return res.status(201).json({ success: true, data: job, job });
+});
+
 router.post('/:id/uninstall', requireOperator, async (req, res) => {
   const vm = await VM.findById(req.params.id);
   if (!vm) return res.status(404).json({ success: false, message: 'Not found' });
@@ -333,5 +344,8 @@ router.post('/:id/diagnostics', async (req, res) => {
     });
   }
 });
+
+/** Mount detail sub-routes last so /:id/check, /:id/uninstall, etc. match first */
+router.use('/:id', endpointDetail);
 
 module.exports = router;

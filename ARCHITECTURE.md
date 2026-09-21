@@ -1,106 +1,148 @@
 # RSCD Agent Master — Architecture
 
-**Version:** see `version.txt` (current: 2.0.3)
+**Version:** see `version.txt` (current: 2.0.9)
 
 ## Overview
 
 RSCD Agent Master is a Windows-only control portal for monitoring, auditing, and uninstalling BMC BladeLogic RSCD agents. Connectivity uses WMI (Impacket `wmiexec` or macOS host relay). React SPA + Node.js/Express + MongoDB + Socket.IO.
 
-## Audit logging model (v2.0.2)
+## Data sync model (v2.0.4)
+
+```
+Portal load / Sync now / hourly job
+  → endpointSync.runFullSync()
+    → connectivity.checkAndUpdate (full WMI probe per host)
+    → endpointOps fetch (overview, local users, power) when online
+    → VM.lastFullSyncAt + cached fields in MongoDB
+    → audit log per endpoint + sync.full summary
+    → Socket.IO: sync:start, sync:progress, sync:complete
+
+Live monitor (30s default)
+  → monitor.run() → lightweight probes → vm:status sockets
+```
+
+| Cadence | What updates | UI refresh |
+|---------|--------------|------------|
+| On load + manual **Sync now** + hourly job | Full WMI inventory, local users, hardware fields, synced dashboard widgets | `SyncContext.syncedTick` |
+| Auto-refresh interval (15–120s) | Health, power, running jobs, attention list, job bars | `RefreshContext.tick` |
+| Socket events | `vm:status`, `job:*`, `log:activity` | Live widgets only |
+
+**API:**
+- `POST /api/sync/full` — trigger immediate full re-sync
+- `GET /api/sync/status` — running state, last sync time
+- `GET /api/dashboard/synced` — DB-synced widgets (stats, trend, donut, progress)
+- `GET /api/dashboard/live` — agent-driven widgets (online now, attention list, job bars)
+
+Portal renders immediately on load; background sync shows a non-blocking banner. Sync never blocks page render.
+
+## Authentication (v2.0.4)
+
+The portal is open to all logged-in users. There is **no portal-operator role** or permission gate beyond platform login.
+
+- `POST /api/system/login` — session bootstrap + provisioning queue
+- Default audit actor: `user` (override via `X-Actor` header)
+- `OPERATOR_API_KEY` / operator middleware are deprecated no-ops
+
+## Audit logging
 
 ```
 Action → audit.log() → ActivityLog (MongoDB)
-                    → Socket.IO: log:activity, audit:log, audit:vm-log
+                    → Socket.IO: log:activity, audit:vm-log
 ```
 
-| Field | Description |
-|-------|-------------|
-| actor | Operator identity (`portal-operator` or `X-Actor` header) |
-| tenant | `TENANT_ID` env (default `default`) |
-| action | e.g. `login.success`, `power.off_force`, `wmi.detect`, `vm.create` |
-| status | `started`, `success`, `failed`, `retry` |
-| durationMs | Wall-clock duration |
-| vmId/vmName | Endpoint scope when applicable |
-
-Secrets are masked as `****` before persistence.
-
-**UI surfaces:**
-- **Audit Log** page (`/logs`) — all events, filterable by category
-- **Job log** — uninstall/provision jobs (`log:new`)
-- **Endpoint lightbox** Logs/Audit tabs — per-VM stream via `audit:vm-log`
+Sync events use `category: sync` with actions `sync.full` and `sync.endpoint`.
 
 ## Endpoint lightbox
 
-Opened from endpoints table row, Local Users cell, or Open button.
+Opened by **row click** on the endpoints table (no Actions column).
 
 | Tab | API | Data source |
 |-----|-----|-------------|
-| Overview | `GET /api/vms/:id/detail/overview` | WMI: hostname, OS, model, service tag |
-| System | `.../system` | WMI: CPU, RAM, disks, NICs |
-| Local Users | `.../local-users` | WMI: Get-LocalUser for required accounts |
-| Software | `.../software` | WMI: registry uninstall keys |
-| RSCD/Agents | `.../rscd` | `rscdDetection.detectRscd()` |
-| Power | `.../power` + `POST .../power` | WMI shutdown commands |
-| Logs / Audit | `.../logs`, `.../audit` | ActivityLog filtered by vmId |
-| Console | `.../console` | RDP launch URL (real, not mock) |
+| Overview | `GET /api/vms/:id/detail/overview` | WMI live query |
+| System | `.../system` | WMI |
+| Local Users | `.../local-users` | WMI Get-LocalUser |
+| Software | `.../software` | WMI registry |
+| RSCD/Agents | `.../rscd` | `rscdDetection` |
+| Power | `.../power` + `POST .../power` | WMI |
+| Logs / Audit | `.../logs`, `.../audit` | ActivityLog |
+| Console | `.../console` | RDP URL |
 
-Loading skeleton per tab; empty states when endpoint offline.
+## Endpoints table columns (v2.0.4)
 
-## Dashboard (v2.0.3)
+Hostname · IP · OS · Health · Power State
 
-**Route:** `/dashboard` (default landing)
+Local Users and Last Seen are available in the lightbox only.
 
-**API:** `GET /api/dashboard?status=online|offline` — aggregates VMs, jobs, and `ActivityLog` into widget payloads (stats, trend, donut, attention list, progress bars, job bar chart). No mock data.
+## Dashboard
 
-**Layout:** Sticky collapsible sidebar · header with global search, endpoint filter, view toggle, auto-refresh interval, manual refresh, operator avatar · responsive card grid on `#F3F4F6` background.
+**Route:** `/dashboard` (registered in React Router; sidebar link fixed in v2.0.4)
 
-**Reusable widgets** (`frontend/src/components/ui/`): `StatCard`, `TrendChartCard`, `DonutCard`, `ListCard`, `MiniProgressCard`, `MiniBarChartCard`, `DashboardHeader`, `Sidebar`, `CardShell`.
+**Widgets:** Stat cards (synced total + live online), trend/donut/progress from sync, list + job bars live.
 
-**Refresh:** `RefreshContext` drives 15–120s auto-refresh (`tick`) consumed by dashboard and list pages; header controls replace the legacy toolbar refresh on the home view.
+## Apple-style design tokens (v2.0.4)
 
-**Charts:** Recharts with primary `#2F3EA0`; tooltips show live API values; per-card empty states when inventory is empty.
+Defined in `frontend/src/index.css` and shared UI components (`frontend/src/components/ui/`):
 
-## Endpoints table columns
+| Token | Value |
+|-------|-------|
+| Background | `#F5F5F7` |
+| Cards | `#FFFFFF`, 12px radius |
+| Text | `#1D1D1F` / muted `#6E6E73` |
+| Accent | `#0A84FF` |
+| Shadows | soft `0 1px 2px`, `0 4px 12px` |
+| Icons | Lucide, stroke 1.5, sizes 16/20/24 |
+| Spacing | 16px mobile / 24px desktop page padding, 16px card padding & gaps |
 
-Hostname · IP · OS · Health · Power State · Local Users · Last Seen · Actions
+## Layout & scrolling
 
-**Local Users:** `VM.localUsers.present / required` with green/amber/red coding. Tooltip lists present vs missing users.
-
-**Power State:** `on` / `off` / `unknown` — updated on WMI probe (`connectivity.checkAndUpdate`).
-
-## Fixed operations credential
-
-Server-side only (`backend/src/config/operationsCredential.js`):
-
-- Username: `rdsroot` (displayed as RDSROOT)
-- Password: `RDSROOT_OPERATIONS_PASSWORD` env (default `1Rs50U$D`)
-
-Used for power operations and endpoint detail WMI. UI cannot override; password prompt is confirmation-only.
-
-## Core flows
-
-### Login & provisioning
-`POST /api/system/operator-session` → audit log → background provision job → updates `VM.localUsers`
-
-### Uninstall
-`winRemote.runUninstall()` → parallel `rscdDetection` → async WMI steps → job progress sockets
-
-### Power
-`POST /api/vms/:id/power` or `/api/vms/bulk-power` → `shutdown` via WMI → audit log
+- Sidebar + header: sticky, fixed height
+- Main content: independent vertical scroll (`overflow-y: auto`)
+- Tables: scroll inside `.table-wrap` card
+- Lightbox: internal scroll, `body.modal-open` locks outer page
 
 ## Key modules
 
 | Path | Role |
 |------|------|
-| `backend/src/utils/audit.js` | Structured audit logging |
-| `backend/src/services/endpointOps.js` | Lightbox data + power |
-| `backend/src/services/rscdDetection.js` | Parallel RSCD detection |
-| `backend/src/services/localUserProvision.js` | Login user provisioning |
-| `backend/src/config/operationsCredential.js` | Fixed RDSROOT credential |
-| `frontend/src/components/EndpointLightbox.jsx` | Endpoint modal UI |
-| `backend/src/services/dashboard.js` | Dashboard widget aggregation |
-| `frontend/src/DashboardPage.jsx` | Dashboard card grid |
-| `frontend/src/components/ui/*` | Dashboard shell + widget cards |
+| `backend/src/services/endpointSync.js` | Full sync + hourly scheduler |
+| `backend/src/services/dashboard.js` | Synced vs live widget aggregation |
+| `backend/src/api/routes/sync.js` | Sync API |
+| `frontend/src/context/SyncContext.jsx` | Initial sync skeleton + Sync now |
+| `frontend/src/context/RefreshContext.jsx` | Live auto-refresh tick |
+| `frontend/src/components/ui/*` | Shared Apple-style UI primitives |
+
+## Bulk RSCD uninstall (v2.0.8)
+
+`POST /api/endpoints/bulk-uninstall-rscd` with `{ endpointIds: string[] }` (alias: `POST /api/vms/bulk-uninstall-rscd`).
+
+- Fixed credential: **Administrator / Helix@dm1n** (`RSCD_UNINSTALL_USER`, `RSCD_UNINSTALL_PASSWORD`) — not configurable from UI.
+- Per-host sequence: detect → stop → disable → MSI uninstall → registry → directories → verify.
+- Parallel across endpoints (`RSCD_UNINSTALL_CONCURRENCY`, default 5); sequential steps per host.
+- Live progress: `job:progress`, `job:vm-step`, `job:vm-phase`, `log:new`.
+- Idempotent: absent agent → `not_present`, not an error.
+
+| Variable | Default |
+|----------|---------|
+| `RSCD_UNINSTALL_CONCURRENCY` | 5 |
+| `RSCD_UNINSTALL_TIMEOUT_MS` | 600000 |
+| `RSCD_STEP_TIMEOUT_MS` | 120000 |
+
+## Fetch contract (v2.0.9)
+
+All UI data loads use `frontend/src/hooks/useApiQuery.js`:
+
+- 15s timeout, 2 retries with exponential backoff, AbortController on unmount.
+- Always resolves: **data**, **empty**, or **error** — never infinite loading.
+- First fetch shows skeleton; refetches are **silent** (no loading flash).
+- `patchData()` for in-place socket updates without full table reload.
+- Modals/lightboxes render via `Portal` (body) with scroll lock.
+
+## Health & observability (v2.0.8)
+
+- `GET /health` — version, MongoDB state, WMI config, uptime.
+- `GET /ready` — DB ping + sync status (503 if DB down).
+- Boot log line with version and boot time.
+- Frontend: `SocketContext` (connection badge), `ErrorBoundary`, `/debug` (dev-only).
 
 ## WMI timeouts
 
@@ -109,3 +151,4 @@ Used for power operations and endpoint detail WMI. UI cannot override; password 
 | `WMI_CONNECT_TIMEOUT_MS` | 45000 |
 | `WMI_QUERY_TIMEOUT_MS` | 30000 |
 | `WMI_STEP_TIMEOUT_MS` | 300000 |
+| `ENDPOINT_SYNC_INTERVAL_HOURS` | 1 |

@@ -1,144 +1,235 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { X, Loader2, RefreshCw, ExternalLink, Power, MoreVertical } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import {
+  X, Loader2, RefreshCw, ExternalLink, Power, Trash2,
+  LayoutDashboard, Cpu, Users, Package, Shield, ScrollText, Monitor, ClipboardList,
+  Server, HardDrive, Wifi, Clock, Tag, CircleDot, CheckCircle2, XCircle, AlertCircle,
+} from 'lucide-react';
 import api from '../api';
 import { onSocket } from '../socket';
 import { useToast } from './Toast';
+import { resolvePowerState } from '../utils/endpointDisplay';
+import { buildCachedTabData, mergeTabData, isAgentRemoved } from '../utils/lightboxCache';
+import { useApiQuery } from '../hooks/useApiQuery';
+import { TabErrorBoundary } from './ErrorBoundary';
+import { GridSkeleton, TableSkeleton, ListSkeleton } from './ui/TabSkeletons';
+import Portal from './Portal';
 
 const TABS = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'system', label: 'System' },
-  { id: 'local-users', label: 'Local Users' },
-  { id: 'software', label: 'Installed Software' },
-  { id: 'rscd', label: 'RSCD / Agents' },
-  { id: 'power', label: 'Power' },
-  { id: 'logs', label: 'Logs' },
-  { id: 'console', label: 'Console' },
-  { id: 'audit', label: 'Audit' },
+  { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  { id: 'system', label: 'System', icon: Cpu },
+  { id: 'local-users', label: 'Local Users', icon: Users },
+  { id: 'software', label: 'Software', icon: Package },
+  { id: 'rscd', label: 'RSCD / Agents', icon: Shield },
+  { id: 'power', label: 'Power', icon: Power },
+  { id: 'logs', label: 'Logs', icon: ScrollText },
+  { id: 'console', label: 'Console', icon: Monitor },
+  { id: 'audit', label: 'Audit', icon: ClipboardList },
 ];
 
 const POWER_ACTIONS = [
-  { id: 'power_on', label: 'Power On' },
   { id: 'power_off_graceful', label: 'Power Off (graceful)' },
   { id: 'power_off_force', label: 'Power Off (force)' },
   { id: 'restart_graceful', label: 'Restart (graceful)' },
   { id: 'restart_force', label: 'Restart (force)' },
   { id: 'reset', label: 'Reset' },
-  { id: 'power_cycle', label: 'Power Cycle' },
   { id: 'graceful_shutdown', label: 'Graceful Shutdown' },
-  { id: 'wake_on_lan', label: 'Wake-on-LAN' },
 ];
 
-function Skeleton() {
-  return <div className="lightbox-skeleton"><Loader2 className="spin" size={20} /> Loading…</div>;
-}
-
-function Empty({ text }) {
-  return <div className="lightbox-empty">{text}</div>;
-}
-
-function Field({ label, value }) {
+function InfoCard({ icon: Icon, label, value, children }) {
   return (
-    <div className="lightbox-field">
-      <div className="lightbox-field-label">{label}</div>
-      <div className="lightbox-field-value">{value ?? '—'}</div>
+    <div className="lb-info-card">
+      <div className="lb-info-icon"><Icon size={18} strokeWidth={1.5} /></div>
+      <div className="lb-info-body">
+        <div className="lb-info-label">{label}</div>
+        <div className="lb-info-value">{children ?? (value ?? '—')}</div>
+      </div>
+    </div>
+  );
+}
+
+function StatusPill({ status }) {
+  const map = {
+    healthy: { cls: 'badge-online', icon: CheckCircle2 },
+    online: { cls: 'badge-online', icon: CheckCircle2 },
+    active: { cls: 'badge-online', icon: CheckCircle2 },
+    on: { cls: 'badge-online', icon: CircleDot },
+    off: { cls: 'badge-offline', icon: CircleDot },
+    removed: { cls: 'badge-excluded', icon: XCircle },
+    inactive: { cls: 'badge-offline', icon: AlertCircle },
+    unknown: { cls: 'badge-excluded', icon: AlertCircle },
+  };
+  const key = String(status || 'unknown').toLowerCase();
+  const cfg = map[key] || { cls: 'badge-excluded', icon: AlertCircle };
+  const Icon = cfg.icon;
+  return (
+    <span className={`badge ${cfg.cls} lb-status-pill`}>
+      <Icon size={12} strokeWidth={1.5} /> {status}
+    </span>
+  );
+}
+
+function Empty({ icon: Icon = AlertCircle, text }) {
+  return (
+    <div className="lightbox-empty">
+      <Icon size={28} strokeWidth={1.5} className="lb-empty-icon" />
+      <p>{text}</p>
     </div>
   );
 }
 
 function TabOverview({ data }) {
-  if (!data) return <Skeleton />;
+  if (!data) return <Empty text="No overview data available." />;
   return (
-    <div className="lightbox-grid">
-      <Field label="Hostname" value={data.hostname} />
-      <Field label="IP Address" value={data.ip || '—'} />
-      <Field label="Operating System" value={data.os} />
-      <Field label="OS Version" value={data.osVersion || '—'} />
-      <Field label="Model" value={data.model || '—'} />
-      <Field label="Service Tag" value={data.serviceTag || '—'} />
-      <Field label="Last Seen" value={data.lastSeen ? new Date(data.lastSeen).toLocaleString() : '—'} />
-      <Field label="Last Boot" value={data.lastBoot ? new Date(data.lastBoot).toLocaleString() : '—'} />
-      <Field label="Health" value={data.health} />
-      <Field label="Power State" value={data.powerState} />
+    <div className="lb-card-grid">
+      <InfoCard icon={Server} label="Hostname" value={data.hostname} />
+      <InfoCard icon={Wifi} label="IP Address" value={data.ip || '—'} />
+      <InfoCard icon={Monitor} label="Operating System" value={data.os} />
+      <InfoCard icon={Tag} label="OS Version" value={data.osVersion || '—'} />
+      <InfoCard icon={HardDrive} label="Model" value={data.model || '—'} />
+      <InfoCard icon={Tag} label="Service Tag" value={data.serviceTag || '—'} />
+      <InfoCard icon={Clock} label="Last Seen" value={data.lastSeen ? new Date(data.lastSeen).toLocaleString() : '—'} />
+      <InfoCard icon={Clock} label="Last Boot" value={data.lastBoot ? new Date(data.lastBoot).toLocaleString() : '—'} />
+      <InfoCard icon={CircleDot} label="Connectivity" value={<StatusPill status={data.connectivity || data.health} />} />
+      <InfoCard icon={Power} label="Power State" value={<StatusPill status={data.powerState} />} />
+      <InfoCard icon={Shield} label="Agent Version" value={data.agentVersion || '—'} />
     </div>
   );
 }
 
-function TabSystem({ data }) {
-  if (!data) return <Skeleton />;
-  if (!data.cpu && !data.ramGb) return <Empty text="System information unavailable — endpoint may be offline." />;
+function TabSystem({ data, refreshing }) {
+  const hasDetail = data?.cpu || data?.ramGb || data?.disks?.length;
   return (
-    <div className="lightbox-section">
-      <Field label="CPU" value={data.cpu} />
-      <Field label="CPU Cores" value={data.cores} />
-      <Field label="RAM" value={data.ramGb ? `${data.ramGb} GB` : '—'} />
-      <div className="lightbox-field">
-        <div className="lightbox-field-label">Storage</div>
-        {data.disks?.length ? data.disks.map((d, i) => <div key={i} className="lightbox-field-value">{d}</div>) : <div className="lightbox-field-value">—</div>}
+    <div className="lb-section">
+      {refreshing && !hasDetail && (
+        <div className="lb-refresh-hint"><Loader2 className="spin" size={14} strokeWidth={1.5} /> Fetching live system data…</div>
+      )}
+      <div className="lb-card-grid">
+        <InfoCard icon={Cpu} label="CPU" value={data?.cpu || '—'} />
+        <InfoCard icon={Cpu} label="CPU Cores" value={data?.cores || '—'} />
+        <InfoCard icon={Server} label="RAM" value={data?.ramGb ? `${data.ramGb} GB` : '—'} />
+        <InfoCard icon={HardDrive} label="Model" value={data?.model || '—'} />
+        <InfoCard icon={Tag} label="OS Version" value={data?.osVersion || '—'} />
       </div>
-      <div className="lightbox-field">
-        <div className="lightbox-field-label">Network Interfaces</div>
-        {data.networkInterfaces?.length ? data.networkInterfaces.map((n, i) => <div key={i} className="lightbox-field-value">{n}</div>) : <div className="lightbox-field-value">—</div>}
+      <div className="lb-detail-block">
+        <div className="lb-detail-title"><HardDrive size={16} strokeWidth={1.5} /> Storage</div>
+        {data?.disks?.length
+          ? data.disks.map((d, i) => <div key={i} className="lb-detail-line">{d}</div>)
+          : <div className="lb-detail-muted">No disk data — endpoint may be offline</div>}
+      </div>
+      <div className="lb-detail-block">
+        <div className="lb-detail-title"><Wifi size={16} strokeWidth={1.5} /> Network Interfaces</div>
+        {data?.networkInterfaces?.length
+          ? data.networkInterfaces.map((n, i) => <div key={i} className="lb-detail-line">{n}</div>)
+          : <div className="lb-detail-muted">No network data available</div>}
       </div>
     </div>
   );
 }
 
-function TabLocalUsers({ data }) {
-  if (!data) return <Skeleton />;
-  if (!data.users?.length) return <Empty text="No local user data — endpoint unreachable or not yet probed." />;
+function TabLocalUsers({ data, refreshing }) {
+  const users = data?.users || [];
   return (
-    <table className="lightbox-table">
-      <thead><tr><th>User</th><th>Status</th><th>Enabled</th><th>Groups</th><th>Last Login</th></tr></thead>
-      <tbody>
-        {data.users.map((u) => (
-          <tr key={u.name}>
-            <td>{u.name}</td>
-            <td><span className={`badge ${u.present ? 'badge-online' : 'badge-offline'}`}>{u.present ? 'present' : 'missing'}</span></td>
-            <td>{u.present ? (u.enabled ? 'Yes' : 'No') : '—'}</td>
-            <td>{u.groups?.length ? u.groups.join(', ') : '—'}</td>
-            <td>{u.lastLogin ? new Date(u.lastLogin).toLocaleString() : '—'}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div className="lb-section">
+      <div className="lb-summary-row">
+        <InfoCard icon={Users} label="Provisioned" value={`${data?.present ?? 0} / ${data?.required ?? 3}`} />
+        {data?.checkedAt && (
+          <InfoCard icon={Clock} label="Last Checked" value={new Date(data.checkedAt).toLocaleString()} />
+        )}
+      </div>
+      {refreshing && !users.length && (
+        <div className="lb-refresh-hint"><Loader2 className="spin" size={14} strokeWidth={1.5} /> Refreshing local users…</div>
+      )}
+      {users.length ? (
+        <table className="lightbox-table">
+          <thead><tr><th>User</th><th>Status</th><th>Enabled</th><th>Groups</th><th>Last Login</th></tr></thead>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.name}>
+                <td>{u.name}</td>
+                <td><StatusPill status={u.present ? 'active' : 'inactive'} /></td>
+                <td>{u.present ? (u.enabled ? 'Yes' : 'No') : '—'}</td>
+                <td>{u.groups?.length ? u.groups.join(', ') : '—'}</td>
+                <td>{u.lastLogin ? new Date(u.lastLogin).toLocaleString() : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <Empty icon={Users} text="No local user details yet — use Sync now or Refresh to probe this host." />
+      )}
+    </div>
   );
 }
 
-function TabSoftware({ data }) {
-  if (!data) return <Skeleton />;
-  if (!data.programs?.length) return <Empty text="No installed software found or endpoint unreachable." />;
+function TabSoftware({ data, refreshing }) {
+  const programs = data?.programs || [];
   return (
-    <table className="lightbox-table">
-      <thead><tr><th>Program</th><th>Version</th></tr></thead>
-      <tbody>
-        {data.programs.map((p) => (
-          <tr key={`${p.name}-${p.version}`}><td>{p.name}</td><td>{p.version || '—'}</td></tr>
-        ))}
-      </tbody>
-    </table>
+    <div className="lb-section">
+      {refreshing && !programs.length && (
+        <div className="lb-refresh-hint"><Loader2 className="spin" size={14} strokeWidth={1.5} /> Loading installed software…</div>
+      )}
+      {programs.length ? (
+        <table className="lightbox-table">
+          <thead><tr><th>Program</th><th>Version</th></tr></thead>
+          <tbody>
+            {programs.map((p) => (
+              <tr key={`${p.name}-${p.version}`}><td>{p.name}</td><td>{p.version || '—'}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <Empty icon={Package} text="No installed software listed — endpoint may be offline or not yet synced." />
+      )}
+    </div>
   );
 }
 
-function TabRscd({ data }) {
-  if (!data) return <Skeleton />;
+function TabRscd({ vm, data, onUninstall, uninstalling, uninstallJobId, uninstallProgress }) {
+  const removed = isAgentRemoved(vm);
+  const active = data?.agentStatus === 'active' && !removed;
   return (
-    <div className="lightbox-section">
-      <Field label="Service Installed" value={data.serviceInstalled ? 'Yes' : 'No'} />
-      <Field label="Service Status" value={data.serviceStatus || '—'} />
-      <Field label="Agent Status" value={data.agentStatus || '—'} />
-      <Field label="Agent Version" value={data.agentVersion || '—'} />
-      <div className="lightbox-field">
-        <div className="lightbox-field-label">Product Codes</div>
-        <div className="lightbox-field-value">{data.productCodes?.length ? data.productCodes.join(', ') : '—'}</div>
+    <div className="lb-section">
+      <div className="lb-card-grid">
+        <InfoCard icon={Shield} label="Agent Status" value={<StatusPill status={removed ? 'removed' : (active ? 'active' : 'inactive')} />} />
+        <InfoCard icon={Tag} label="Agent Version" value={data?.agentVersion || '—'} />
+        <InfoCard icon={Server} label="Service" value={data?.serviceInstalled ? 'Installed' : 'Not installed'} />
+        <InfoCard icon={CircleDot} label="Service State" value={data?.serviceStatus || '—'} />
       </div>
-      <div className="lightbox-field">
-        <div className="lightbox-field-label">Programs</div>
-        {data.programs?.length ? data.programs.map((p, i) => <div key={i} className="lightbox-field-value">{p}</div>) : <div className="lightbox-field-value">—</div>}
+      <div className="lb-detail-block">
+        <div className="lb-detail-title"><Package size={16} strokeWidth={1.5} /> Install Paths</div>
+        {data?.installPaths?.length
+          ? data.installPaths.map((p, i) => <div key={i} className="lb-detail-line mono">{p}</div>)
+          : <div className="lb-detail-muted">No install path recorded</div>}
       </div>
-      <div className="lightbox-field">
-        <div className="lightbox-field-label">Install Paths</div>
-        {data.installPaths?.length ? data.installPaths.map((p, i) => <div key={i} className="lightbox-field-value">{p}</div>) : <div className="lightbox-field-value">—</div>}
+      {data?.productCodes?.length > 0 && (
+        <div className="lb-detail-block">
+          <div className="lb-detail-title"><Tag size={16} strokeWidth={1.5} /> Product Codes</div>
+          <div className="lb-detail-line mono">{data.productCodes.join(', ')}</div>
+        </div>
+      )}
+      <div className="lb-action-bar">
+        <button
+          type="button"
+          className="btn btn-danger"
+          disabled={removed || vm.excluded || uninstalling}
+          onClick={onUninstall}
+        >
+          {uninstalling ? <Loader2 className="spin" size={16} strokeWidth={1.5} /> : <Trash2 size={16} strokeWidth={1.5} />}
+          {uninstalling ? 'Uninstalling…' : 'Uninstall RSCD Agent'}
+        </button>
+        {removed && <span className="lb-detail-muted">Agent already removed from this host.</span>}
+        {vm.excluded && <span className="lb-detail-muted">Excluded endpoints cannot be uninstalled.</span>}
       </div>
+      {uninstallJobId && (
+        <div className="lb-uninstall-progress">
+          <div className="lb-detail-title"><Trash2 size={16} strokeWidth={1.5} /> Uninstall Progress</div>
+          <div className="progress-bar-wrap">
+            <div className="progress-bar-fill" style={{ width: `${uninstallProgress}%` }} />
+          </div>
+          <div className="lb-detail-muted">{uninstallProgress}% — view full log in Jobs</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -146,10 +237,7 @@ function TabRscd({ data }) {
 function TabPower({ vm, data, onPower, powerPending }) {
   const [password, setPassword] = useState('');
   const [confirmAction, setConfirmAction] = useState(null);
-  if (!data) return <Skeleton />;
-  const run = (action) => {
-    setConfirmAction(action);
-  };
+  const state = data?.state || resolvePowerState(vm);
   const confirm = () => {
     if (!password) return;
     onPower(confirmAction, password);
@@ -157,17 +245,17 @@ function TabPower({ vm, data, onPower, powerPending }) {
     setPassword('');
   };
   return (
-    <div className="lightbox-section">
-      <Field label="Current Power State" value={data.state || vm.powerState || 'unknown'} />
-      <Field label="Operations Account" value="RDSROOT (fixed)" />
+    <div className="lb-section">
+      <InfoCard icon={Power} label="Current Power State" value={<StatusPill status={state} />} />
+      <InfoCard icon={Users} label="Operations Account" value="RDSROOT (fixed)" />
       <label className="field">
         <span>Operations Password (required)</span>
         <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter operations password" autoComplete="off" />
       </label>
       <div className="power-actions-grid">
         {POWER_ACTIONS.map((a) => (
-          <button key={a.id} className="btn btn-outline btn-sm" disabled={!!powerPending || !password} onClick={() => run(a.id)}>
-            {powerPending === a.id ? <Loader2 className="spin" size={14} /> : <Power size={14} />}
+          <button key={a.id} type="button" className="btn btn-outline btn-sm" disabled={!!powerPending || !password} onClick={() => setConfirmAction(a.id)}>
+            {powerPending === a.id ? <Loader2 className="spin" size={14} strokeWidth={1.5} /> : <Power size={14} strokeWidth={1.5} />}
             {a.label}
           </button>
         ))}
@@ -176,8 +264,8 @@ function TabPower({ vm, data, onPower, powerPending }) {
         <div className="lightbox-confirm">
           <p>Confirm <strong>{POWER_ACTIONS.find((a) => a.id === confirmAction)?.label}</strong> on <strong>{vm.name}</strong>?</p>
           <div className="lightbox-confirm-actions">
-            <button className="btn btn-danger btn-sm" onClick={confirm}>Confirm</button>
-            <button className="btn btn-outline btn-sm" onClick={() => setConfirmAction(null)}>Cancel</button>
+            <button type="button" className="btn btn-danger btn-sm" onClick={confirm}>Confirm</button>
+            <button type="button" className="btn btn-outline btn-sm" onClick={() => setConfirmAction(null)}>Cancel</button>
           </div>
         </div>
       )}
@@ -186,8 +274,8 @@ function TabPower({ vm, data, onPower, powerPending }) {
 }
 
 function TabLogs({ data, liveLogs }) {
-  const logs = [...(liveLogs || []), ...(data || [])];
-  if (!logs.length) return <Empty text="No log entries for this endpoint yet." />;
+  const logs = [...(liveLogs || []), ...(Array.isArray(data) ? data : [])];
+  if (!logs.length) return <Empty icon={ScrollText} text="No log entries for this endpoint yet." />;
   return (
     <div className="lightbox-log-stream">
       {logs.slice(0, 300).map((log, i) => (
@@ -204,87 +292,66 @@ function TabLogs({ data, liveLogs }) {
 }
 
 function TabConsole({ data }) {
-  if (!data) return <Skeleton />;
-  if (!data.supported) return <Empty text="Console launch is not available for this endpoint." />;
+  if (!data?.supported) return <Empty icon={Monitor} text="Console launch is not available for this endpoint." />;
   return (
-    <div className="lightbox-section">
-      <Field label="Protocol" value={data.protocol?.toUpperCase()} />
-      <Field label="Instructions" value={data.instructions} />
+    <div className="lb-section">
+      <InfoCard icon={Monitor} label="Protocol" value={data.protocol?.toUpperCase()} />
+      <InfoCard icon={ExternalLink} label="Instructions" value={data.instructions} />
       {data.url && (
         <a className="btn btn-primary" href={data.url} target="_blank" rel="noopener noreferrer">
-          <ExternalLink size={14} /> Launch Remote Desktop
+          <ExternalLink size={14} strokeWidth={1.5} /> Launch Remote Desktop
         </a>
       )}
     </div>
   );
 }
 
-export function LocalUsersCell({ vm, onOpen }) {
-  const lu = vm.localUsers || {};
-  const required = lu.required || 3;
-  const present = lu.present ?? 0;
-  const unreachable = ['offline', 'unreachable', 'timeout', 'unknown'].includes(vm.connectivityState || vm.status);
-  const tone = unreachable && present === 0 ? 'red' : present >= required ? 'green' : present > 0 ? 'amber' : 'red';
-  const users = lu.users || [];
-  const presentNames = users.filter((u) => u.present).map((u) => u.name);
-  const missingNames = users.filter((u) => !u.present).map((u) => u.name);
-  const tooltip = users.length
-    ? `Present: ${presentNames.join(', ') || 'none'}\nMissing: ${missingNames.join(', ') || 'none'}`
-    : 'Not yet probed — open endpoint for details';
-
-  return (
-    <div className="local-users-cell" onClick={(e) => { e.stopPropagation(); onOpen(vm, 'local-users'); }}>
-      <span className={`local-users-count local-users-${tone}`} title={tooltip}>
-        {unreachable && present === 0 ? '—' : `${present} / ${required}`}
-      </span>
-      <button type="button" className="row-menu-trigger lightbox-open-btn" aria-label="Open endpoint" onClick={(e) => { e.stopPropagation(); onOpen(vm); }}>
-        <MoreVertical size={16} />
-      </button>
-    </div>
-  );
-}
-
-export function PowerBadge({ state }) {
-  const s = state || 'unknown';
+export function PowerBadge({ vm, state }) {
+  const s = state || resolvePowerState(vm) || 'unknown';
   const cls = { on: 'badge-online', off: 'badge-offline', unknown: 'badge-excluded' }[s] || 'badge-excluded';
   return <span className={`badge ${cls}`}>{s}</span>;
 }
 
+export function RscdAgentBadge({ vm }) {
+  const label = vm?.excluded ? 'excluded' : (vm?.status === 'in_progress' ? 'checking' : (
+    vm?.agentStatus === 'active' && vm?.version !== 'removed' ? 'active' : 'inactive'
+  ));
+  const cls = label === 'active' ? 'badge-online' : label === 'checking' ? 'badge-progress' : label === 'excluded' ? 'badge-excluded' : 'badge-offline';
+  return <span className={`badge ${cls}`}>{label}</span>;
+}
+
 export default function EndpointLightbox({ vm, initialTab = 'overview', onClose, onVmUpdated }) {
   const [tab, setTab] = useState(initialTab);
-  const [tabData, setTabData] = useState({});
-  const [tabLoading, setTabLoading] = useState({});
   const [liveLogs, setLiveLogs] = useState([]);
   const [powerPending, setPowerPending] = useState(null);
+  const [uninstalling, setUninstalling] = useState(false);
+  const [uninstallJobId, setUninstallJobId] = useState(null);
+  const [uninstallProgress, setUninstallProgress] = useState(0);
   const dialogRef = useRef(null);
   const toast = useToast();
+  const nav = useNavigate();
+  const tabQuery = useApiQuery(
+    async ({ timeout, signal }) => {
+      const r = await api.get(`/vms/${vm._id}/detail/${tab}`, { timeout, signal });
+      return r.data;
+    },
+    [vm?._id, tab],
+    { timeout: 15000, enabled: !!vm?._id },
+  );
 
-  const loadTab = useCallback(async (tabId) => {
+  useEffect(() => {
+    document.body.classList.add('modal-open');
+    return () => document.body.classList.remove('modal-open');
+  }, []);
+
+  useEffect(() => {
     if (!vm?._id) return;
-    setTabLoading((t) => ({ ...t, [tabId]: true }));
-    try {
-      const r = await api.get(`/vms/${vm._id}/detail/${tabId}`);
-      setTabData((d) => ({ ...d, [tabId]: r.data }));
-    } catch (e) {
-      toast(e.message, 'error');
-      setTabData((d) => ({ ...d, [tabId]: null }));
-    } finally {
-      setTabLoading((t) => ({ ...t, [tabId]: false }));
-    }
-  }, [vm?._id, toast]);
-
-  useEffect(() => {
-    if (!vm) return;
     setTab(initialTab);
-    setTabData({});
     setLiveLogs([]);
-    loadTab(initialTab);
+    setUninstallJobId(null);
+    setUninstallProgress(0);
+    setUninstalling(false);
   }, [vm?._id, initialTab]);
-
-  useEffect(() => {
-    if (!vm) return;
-    loadTab(tab);
-  }, [tab, vm?._id]);
 
   useEffect(() => {
     if (!vm?._id) return;
@@ -295,6 +362,27 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
     });
     return off;
   }, [vm?._id]);
+
+  useEffect(() => {
+    if (!uninstallJobId) return;
+    const jobId = String(uninstallJobId);
+    const onProgress = (d) => {
+      if (String(d.jobId) !== jobId) return;
+      setUninstallProgress(d.progress ?? 0);
+    };
+    const onDone = (d) => {
+      if (String(d.jobId) !== jobId) return;
+      setUninstalling(false);
+      setUninstallProgress(100);
+      toast(d.job?.status === 'failed' ? 'Uninstall failed — see job log' : 'Uninstall completed', d.job?.status === 'failed' ? 'error' : 'success');
+      onVmUpdated?.();
+      tabQuery.reload();
+    };
+    const off1 = onSocket('job:progress', onProgress);
+    const off2 = onSocket('job:completed', onDone);
+    const off3 = onSocket('job:started', onProgress);
+    return () => { off1(); off2(); off3(); };
+  }, [uninstallJobId, toast, onVmUpdated, tabQuery.reload]);
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -308,7 +396,7 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
     try {
       await api.post(`/vms/${vm._id}/power`, { action, password });
       toast(`Power action sent: ${action}`, 'success');
-      loadTab('power');
+      tabQuery.reload();
       onVmUpdated?.();
     } catch (e) {
       toast(e.message, 'error');
@@ -317,26 +405,76 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
     }
   };
 
+  const handleUninstall = async () => {
+    if (isAgentRemoved(vm)) return;
+    if (!confirm(`Permanently uninstall the RSCD agent on ${vm.name}?\n\nThis will stop services, remove from Programs & Features, clean registry and directories.`)) return;
+    setUninstalling(true);
+    setUninstallProgress(0);
+    try {
+      const r = await api.post('/endpoints/bulk-uninstall-rscd', {
+        endpointIds: [vm._id],
+        name: `Uninstall — ${vm.name}`,
+      });
+      const job = r.data || r.job;
+      const jobId = job?._id || job?.id;
+      if (jobId) {
+        setUninstallJobId(jobId);
+        toast('Uninstall job started', 'info');
+      } else {
+        setUninstalling(false);
+        toast('Uninstall started', 'info');
+      }
+    } catch (e) {
+      setUninstalling(false);
+      toast(e.message, 'error');
+    }
+  };
+
   if (!vm) return null;
 
+  const cachedData = useMemo(() => buildCachedTabData(vm, tab), [vm, tab]);
+  const displayData = mergeTabData(vm, tab, tabQuery.data) ?? cachedData;
+  const refreshing = tabQuery.isLoading && !!displayData;
+
   const renderTab = () => {
-    if (tabLoading[tab]) return <Skeleton />;
-    const data = tabData[tab];
+    if (tabQuery.isError && !displayData) {
+      return (
+        <TabErrorBoundary error={tabQuery.error} onRetry={tabQuery.reload} />
+      );
+    }
+
+    const skeleton = tabQuery.isLoading && !displayData;
+    if (skeleton) {
+      if (['local-users', 'software', 'audit', 'logs'].includes(tab)) return <TableSkeleton />;
+      if (tab === 'system') return <GridSkeleton rows={4} />;
+      return <GridSkeleton />;
+    }
+
     switch (tab) {
-      case 'overview': return <TabOverview data={data} />;
-      case 'system': return <TabSystem data={data} />;
-      case 'local-users': return <TabLocalUsers data={data} />;
-      case 'software': return <TabSoftware data={data} />;
-      case 'rscd': return <TabRscd data={data} />;
-      case 'power': return <TabPower vm={vm} data={data} onPower={handlePower} powerPending={powerPending} />;
-      case 'logs': return <TabLogs data={data} liveLogs={liveLogs} />;
-      case 'audit': return <TabLogs data={data} liveLogs={liveLogs} />;
-      case 'console': return <TabConsole data={data} />;
+      case 'overview': return <TabOverview data={displayData} />;
+      case 'system': return <TabSystem data={displayData} refreshing={refreshing} />;
+      case 'local-users': return <TabLocalUsers data={displayData} refreshing={refreshing} />;
+      case 'software': return <TabSoftware data={displayData} refreshing={refreshing} />;
+      case 'rscd': return (
+        <TabRscd
+          vm={vm}
+          data={displayData}
+          onUninstall={handleUninstall}
+          uninstalling={uninstalling}
+          uninstallJobId={uninstallJobId}
+          uninstallProgress={uninstallProgress}
+        />
+      );
+      case 'power': return <TabPower vm={vm} data={displayData} onPower={handlePower} powerPending={powerPending} />;
+      case 'logs': return skeleton ? <ListSkeleton /> : <TabLogs data={displayData} liveLogs={liveLogs} />;
+      case 'audit': return skeleton ? <ListSkeleton /> : <TabLogs data={displayData} liveLogs={liveLogs} />;
+      case 'console': return <TabConsole data={displayData} />;
       default: return <Empty text="Unknown tab" />;
     }
   };
 
   return (
+    <Portal>
     <div className="lightbox-backdrop" onClick={onClose} role="presentation">
       <div
         className="lightbox"
@@ -353,27 +491,37 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
             <p className="lightbox-sub">{vm.fqdn || vm.ip || 'Windows endpoint'}</p>
           </div>
           <div className="lightbox-header-actions">
-            <button className="btn btn-outline btn-sm" onClick={() => loadTab(tab)}><RefreshCw size={14} /> Refresh tab</button>
-            <button className="btn btn-outline btn-sm" onClick={onClose} aria-label="Close"><X size={16} /></button>
+            {refreshing && <Loader2 className="spin" size={14} strokeWidth={1.5} aria-label="Refreshing" />}
+            <button type="button" className="btn btn-outline btn-sm" onClick={() => tabQuery.reload(true)}><RefreshCw size={14} strokeWidth={1.5} /> Refresh</button>
+            {uninstallJobId && (
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => nav(`/jobs/${uninstallJobId}`)}>View Job</button>
+            )}
+            <button type="button" className="btn btn-outline btn-sm" onClick={onClose} aria-label="Close"><X size={16} strokeWidth={1.5} /></button>
           </div>
         </header>
         <nav className="lightbox-tabs" role="tablist">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              role="tab"
-              aria-selected={tab === t.id}
-              className={`lightbox-tab ${tab === t.id ? 'active' : ''}`}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
+          {TABS.map((t) => {
+            const Icon = t.icon;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === t.id}
+                className={`lightbox-tab ${tab === t.id ? 'active' : ''}`}
+                onClick={() => setTab(t.id)}
+              >
+                <Icon size={15} strokeWidth={1.5} />
+                {t.label}
+              </button>
+            );
+          })}
         </nav>
         <div className="lightbox-body" role="tabpanel">
           {renderTab()}
         </div>
       </div>
     </div>
+    </Portal>
   );
 }

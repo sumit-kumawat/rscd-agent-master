@@ -33,6 +33,10 @@ const logRoutes = require('./api/routes/logs');
 const searchRoutes = require('./api/routes/search');
 const systemRoutes = require('./api/routes/system');
 const dashboardRoutes = require('./api/routes/dashboard');
+const syncRoutes = require('./api/routes/sync');
+const endpointSync = require('./services/endpointSync');
+const endpointsRoutes = require('./api/routes/endpoints');
+const mongoose = require('mongoose');
 
 const isProd = process.env.NODE_ENV === 'production';
 const corsOrigin = process.env.CORS_ORIGIN || '*';
@@ -74,7 +78,31 @@ app.get('/health', (req, res) => {
     platform: 'windows-only',
     connectivity: 'wmi',
     version: APP_VERSION,
+    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
     wmi,
+    uptimeSec: Math.round(process.uptime()),
+  });
+});
+
+app.get('/ready', async (req, res) => {
+  const dbOk = mongoose.connection.readyState === 1;
+  let dbPing = false;
+  if (dbOk) {
+    try {
+      await mongoose.connection.db.admin().command({ ping: 1 });
+      dbPing = true;
+    } catch {
+      dbPing = false;
+    }
+  }
+  const sync = endpointSync.getSyncStatus();
+  const ready = dbPing;
+  res.status(ready ? 200 : 503).json({
+    ready,
+    version: APP_VERSION,
+    mongodb: dbPing ? 'ok' : 'fail',
+    sync: { running: sync.running, lastSyncAt: sync.lastSyncAt },
+    uptimeSec: Math.round(process.uptime()),
   });
 });
 
@@ -84,6 +112,8 @@ app.use('/api/logs', logRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/system', systemRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/sync', syncRoutes);
+app.use('/api/endpoints', endpointsRoutes);
 
 const publicDir = path.join(__dirname, '../public');
 app.use(express.static(publicDir));
@@ -103,6 +133,7 @@ const PORT = process.env.PORT || 5000;
 const shutdown = (signal) => {
   logger.info(`${signal} received — shutting down`);
   monitor.timer && clearInterval(monitor.timer);
+  endpointSync.stopHourlySync();
   server.close(() => {
     logger.info('HTTP server closed');
     process.exit(0);
@@ -113,14 +144,12 @@ const shutdown = (signal) => {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
+const bootStarted = Date.now();
 connectDB().then(() => {
   server.listen(PORT, () => {
-    logger.info(`RSCD Manager v${APP_VERSION} ${isProd ? '(production)' : '(dev)'} on port ${PORT}`);
-    if (isProd && !process.env.OPERATOR_API_KEY) {
-      logger.error(
-        'OPERATOR_API_KEY not set — destructive API actions are blocked until a key is configured',
-      );
-    }
+    const bootMs = Date.now() - bootStarted;
+    logger.info(`RSCD Manager v${APP_VERSION} ${isProd ? '(production)' : '(dev)'} on port ${PORT} — boot ${bootMs}ms`);
+    logger.info(`MongoDB: connected | API: /api | Health: /health | Ready: /ready`);
     try {
       const wmiConfig = require('./config/wmi');
       const { resolveWmiexec, checkWmiRelay } = require('./utils/wmiExec');
@@ -134,6 +163,7 @@ connectDB().then(() => {
         );
       }
       monitor.start(io, { deferInitialRun: wmiConfig.startupCheckOnBoot });
+      endpointSync.startHourlySync(io);
 
       if (wmiConfig.startupCheckOnBoot) {
         (async () => {

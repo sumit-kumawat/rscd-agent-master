@@ -1,15 +1,15 @@
-import { useEffect, useState, useRef } from 'react';
-import { RefreshCw, Loader2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
 import api from './api';
 import { onSocket } from './socket';
 import { useSearch } from './context/SearchContext';
 import { useRefresh } from './context/RefreshContext';
+import { useApiQuery } from './hooks/useApiQuery';
+import { ListSkeleton } from './components/ui/TabSkeletons';
 
 const levelClass = { error: 'log-msg-error', warning: 'log-msg-warning', success: 'log-msg-success' };
 
 export default function LogsPage() {
-  const [logs, setLogs] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
   const topRef = useRef(null);
   const { search } = useSearch();
@@ -21,30 +21,41 @@ export default function LogsPage() {
     return () => clearTimeout(t);
   }, [search]);
 
-  const load = () => {
-    setLoading(true);
-    const params = new URLSearchParams();
-    if (filter) params.set('category', filter);
-    if (debouncedSearch) params.set('search', debouncedSearch);
-    params.set('limit', '500');
-    const q = params.toString() ? `?${params}` : '';
-    api.get(`/logs${q}`)
-      .then((r) => setLogs(r.data || []))
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => { load(); }, [filter, debouncedSearch, tick]);
+  const {
+    data: logs = [],
+    isLoading,
+    isError,
+    error,
+    reload,
+    silentReload,
+    patchData,
+  } = useApiQuery(
+    async ({ timeout, signal }) => {
+      const params = new URLSearchParams();
+      if (filter) params.set('category', filter);
+      if (debouncedSearch) params.set('search', debouncedSearch);
+      params.set('limit', '500');
+      const q = params.toString() ? `?${params}` : '';
+      const r = await api.get(`/logs${q}`, { timeout, signal });
+      return r.data || [];
+    },
+    [filter, debouncedSearch],
+    { initialData: [] },
+  );
 
   useEffect(() => {
-    return onSocket('log:activity', (entry) => {
-      setLogs((prev) => [entry, ...prev].slice(0, 500));
-    });
-  }, []);
+    silentReload();
+  }, [tick, silentReload]);
+
+  useEffect(() => onSocket('log:activity', (entry) => {
+    patchData((prev) => [entry, ...prev].slice(0, 500));
+  }), [patchData]);
 
   useEffect(() => {
     topRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs.length]);
+
+  const loading = isLoading && !logs.length;
 
   return (
     <div className="page">
@@ -62,7 +73,7 @@ export default function LogsPage() {
           <option value="system">System</option>
         </select>
         <div className="toolbar-right">
-          <button className="btn btn-outline" onClick={load}><RefreshCw size={14} /> Refresh</button>
+          <button className="btn btn-outline" onClick={() => reload(true)}><RefreshCw size={14} /> Refresh</button>
         </div>
       </div>
 
@@ -74,7 +85,9 @@ export default function LogsPage() {
         <div className="log-list">
           <div ref={topRef} />
           {loading ? (
-            <div className="empty"><Loader2 className="spin" size={18} /> Loading…</div>
+            <ListSkeleton rows={8} />
+          ) : isError ? (
+            <div className="empty">{error} — <button className="btn btn-outline btn-sm" onClick={() => reload(false)}>Retry</button></div>
           ) : logs.length === 0 ? (
             <div className="empty">No audit entries yet — actions performed in the portal will appear here</div>
           ) : logs.map((log) => (

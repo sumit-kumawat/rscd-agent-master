@@ -20,6 +20,12 @@ function sleep(ms) {
 }
 
 const RSCD_ROOT = DEFAULT_INSTALL_ROOT;
+const DEFAULT_CLEANUP_ROOTS = [
+  RSCD_ROOT,
+  'C:\\Program Files\\BMC Software',
+  'C:\\Program Files (x86)\\BMC Software',
+  'C:\\ProgramData\\BMC',
+];
 
 function parseUninstallOutput(stdout) {
   const text = String(stdout || '');
@@ -47,6 +53,18 @@ function getManualUninstallSteps(installRoot) {
 class WinRemoteService {
   connectWmi(vm) {
     return agentProbe.connectWmi(vm);
+  }
+
+  /** Fixed Administrator credential for RSCD uninstall — not VM-stored creds. */
+  connectForUninstall(vm) {
+    const uninstallCred = require('../config/uninstallCredential');
+    const plain = toVmPlain(vm);
+    return this.connectWmi({
+      ...plain,
+      wmiUsername: uninstallCred.username,
+      wmiPassword: uninstallCred.password,
+      wmiDomain: uninstallCred.domain || '',
+    });
   }
 
   async _wmiCmd(session, cmdLine, options = {}) {
@@ -198,6 +216,16 @@ class WinRemoteService {
     }
   }
 
+  async _disableService(session, onLog) {
+    onLog('Disabling RSCD service startup…');
+    try {
+      await this._wmiCmd(session, 'sc config RSCD start= disabled', { async: true, timeoutMs: STEP_TIMEOUTS.stop });
+      onLog('RSCD service start mode set to Disabled', 'success');
+    } catch (err) {
+      onLog(`Could not disable RSCD service: ${err.message}`, 'warning');
+    }
+  }
+
   /** Step 3 — Uninstall via Programs & Features (msiexec). */
   async _msiUninstall(session, codes, onLog) {
     onLog('Step 3 — Uninstalling from Programs & Features (msiexec)…');
@@ -247,6 +275,12 @@ class WinRemoteService {
     } catch { /* */ }
     try {
       await this._wmiCmd(session, 'reg delete "HKLM\\SOFTWARE\\WOW6432Node\\BladeLogic" /f', { async: true });
+    } catch { /* */ }
+    try {
+      await this._wmiCmd(session, 'reg delete "HKLM\\SOFTWARE\\BMC Software" /f', { async: true });
+    } catch { /* */ }
+    try {
+      await this._wmiCmd(session, 'reg delete "HKLM\\SOFTWARE\\WOW6432Node\\BMC Software" /f', { async: true });
     } catch { /* */ }
     const script = [
       '$ErrorActionPreference="SilentlyContinue"',
@@ -325,10 +359,13 @@ class WinRemoteService {
     const onLog = (message, level = 'info') => {
       if (options.onLog) options.onLog(level, message);
     };
+    const onPhase = (phase, detail = {}) => {
+      if (options.onPhase) options.onPhase({ phase, ...detail });
+    };
     const onStep = (step, total, label) => {
       if (options.onStep) options.onStep({ step, total, label, percent: Math.round(((step - 1) / total) * 100) });
     };
-    const TOTAL_STEPS = 6;
+    const TOTAL_STEPS = 7;
 
     if (isAgentRemoved(plain)) {
       onLog('Agent already marked Removed in database — skipping uninstall', 'info');
@@ -345,8 +382,9 @@ class WinRemoteService {
       };
     }
 
-    onLog('Connecting via WMI…');
-    const session = await this.connectWmi(plain);
+    onPhase('detecting');
+    onLog('Connecting via WMI (Administrator credential)…');
+    const session = await this.connectForUninstall(plain);
     onLog(`WMI connection successful (${session.username}@${session.host})`, 'success');
 
     onStep(1, TOTAL_STEPS, 'Detect agent');
@@ -372,8 +410,10 @@ class WinRemoteService {
       const verified = await this._verifyRemoved(session, agent.installRoots);
       if (verified.success) {
         onLog('No RSCD agent found — host already clean', 'success');
+        onPhase('done', { result: 'not_present' });
         return {
           success: true,
+          notPresent: true,
           username: session.username,
           host: session.host,
           method: 'wmi',
@@ -388,17 +428,30 @@ class WinRemoteService {
       onLog(`Agent discovered — v${agent.version} @ ${agent.installRoot || RSCD_ROOT}`);
     }
 
+    const cleanupRoots = [...new Set([
+      ...(agent.installRoots || []),
+      agent.installRoot,
+      ...DEFAULT_CLEANUP_ROOTS,
+    ].filter(Boolean))];
+    agent.installRoots = cleanupRoots;
+
+    onPhase('stopping');
     onStep(2, TOTAL_STEPS, 'Stop service');
     await this._stopServiceIfRunning(session, serviceState, onLog);
-    onStep(3, TOTAL_STEPS, 'MSI uninstall');
+    onStep(3, TOTAL_STEPS, 'Disable service');
+    await this._disableService(session, onLog);
+    onPhase('uninstalling');
+    onStep(4, TOTAL_STEPS, 'MSI uninstall');
     const msiResults = await this._msiUninstall(session, codes, onLog);
     await this._removeServiceRegistration(session, onLog);
-    onStep(4, TOTAL_STEPS, 'Registry cleanup');
+    onPhase('cleaning');
+    onStep(5, TOTAL_STEPS, 'Registry cleanup');
     await this._cleanupRegistry(session, onLog);
-    onStep(5, TOTAL_STEPS, 'Directory cleanup');
-    await this._cleanupDirectories(session, agent.installRoots, onLog);
+    onStep(6, TOTAL_STEPS, 'Directory cleanup');
+    await this._cleanupDirectories(session, cleanupRoots, onLog);
 
-    onStep(6, TOTAL_STEPS, 'Verify removal');
+    onPhase('verifying');
+    onStep(7, TOTAL_STEPS, 'Verify removal');
     onLog('Verifying remote removal state…');
     let verified = await this._verifyRemoved(session, agent.installRoots);
     if (!verified.success) {
@@ -416,9 +469,14 @@ class WinRemoteService {
       onLog(`Remote verification failed — ${verified.message}`, 'error');
     }
 
+    const rebootRequired = /reboot|restart required|pendingfile/i.test(String(verified.message || ''));
     const message = [...msiResults, verified.message].filter(Boolean).join('\n');
+    const success = verified.success && !verified.partial;
+    onPhase(success ? 'done' : 'failed', { result: success ? 'removed' : 'partial', rebootRequired });
     return {
-      success: verified.success && !verified.partial,
+      success,
+      partial: verified.partial,
+      rebootRequired,
       username: session.username,
       host: session.host,
       method: 'wmi',

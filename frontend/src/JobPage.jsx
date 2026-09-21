@@ -25,13 +25,21 @@ export default function JobPage() {
   const [job, setJob] = useState(null);
   const [logs, setLogs] = useState([]);
   const [vmSteps, setVmSteps] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const endRef = useRef(null);
   const toast = useToast();
 
   const load = () => {
+    setLoading(true);
+    setLoadError(null);
     Promise.all([api.get(`/jobs/${id}`), api.get(`/jobs/${id}/logs`)])
       .then(([j, l]) => { setJob(j.data); setLogs(l.logs || []); })
-      .catch((e) => toast(e.message, 'error'));
+      .catch((e) => {
+        setLoadError(e.message);
+        toast(e.message, 'error');
+      })
+      .finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, [id]);
@@ -82,13 +90,28 @@ export default function JobPage() {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [logs]);
 
+  if (loading && !job) {
+    return (
+      <div className="page">
+        <div className="toolbar">
+          <Link to="/jobs" className="link back-link">← Jobs</Link>
+          <span className="page-title"><Loader2 className="spin" size={16} strokeWidth={1.5} /> Loading job…</span>
+        </div>
+      </div>
+    );
+  }
+
   if (!job) {
     return (
       <div className="page">
         <div className="toolbar">
           <Link to="/jobs" className="link back-link">← Jobs</Link>
-          <span className="page-title">Loading…</span>
+          <span className="page-title">Job not found</span>
+          <div className="toolbar-right">
+            <button className="btn btn-outline" onClick={load}><RefreshCw size={14} /> Retry</button>
+          </div>
         </div>
+        <div className="empty">{loadError || 'This job does not exist or could not be loaded.'}</div>
       </div>
     );
   }
