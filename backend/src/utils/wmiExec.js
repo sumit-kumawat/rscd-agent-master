@@ -368,11 +368,18 @@ async function runWmiProbe(host, username, password, domain = null, options = {}
   return mergeTcpStages(probeResult, tcpResult);
 }
 
-function runWmiCommandViaRelay(host, username, password, command, domain = null, timeoutMs = WMI_TIMEOUT) {
+function runWmiCommandViaRelay(host, username, password, command, domain = null, timeoutMs = WMI_TIMEOUT, options = {}) {
   const clientTimeout = relayClientTimeout(timeoutMs);
 
   return relayHttpRequest('POST', '/exec', {
-    host, username, password, command, domain, timeoutMs,
+    host,
+    username,
+    password,
+    command,
+    domain,
+    timeoutMs,
+    silent: !!options.silent,
+    noOutput: !!options.noOutput,
   }, clientTimeout).then(({ body }) => {
     if (body.ok) {
       return {
@@ -450,7 +457,7 @@ async function getWmiRelayStatus() {
 
 function runWmiCommand(host, username, password, command, domain = null, timeoutMs = WMI_TIMEOUT, options = {}) {
   if (wmiConfig.relayUrl) {
-    return runWmiCommandViaRelay(host, username, password, command, domain, timeoutMs);
+    return runWmiCommandViaRelay(host, username, password, command, domain, timeoutMs, options);
   }
 
   const target = formatWmiTarget(host, username, password, domain);
@@ -471,24 +478,31 @@ function runWmiCommand(host, username, password, command, domain = null, timeout
   });
 }
 
-async function runWmiPowershell(host, username, password, script, domain = null, timeoutMs = WMI_TIMEOUT) {
+async function runWmiPowershell(host, username, password, script, domain = null, timeoutMs = WMI_TIMEOUT, options = {}) {
   const b64 = encodePs(script);
   const command = `cmd.exe /c "${PS_EXE}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand ${b64}`;
   const who = domain ? `${domain}\\${username}` : username;
-  logger.debug(`WMI PowerShell on ${host} as ${who}`);
-  return runWmiCommand(host, username, password, command, domain, timeoutMs);
+  logger.debug(`WMI PowerShell on ${host} as ${who} (timeout ${timeoutMs}ms)`);
+  return runWmiCommand(host, username, password, command, domain, timeoutMs, options);
 }
 
-async function runWmiCmd(host, username, password, cmdLine, domain = null, timeoutMs = WMI_CONNECT_TIMEOUT) {
+async function runWmiCmd(host, username, password, cmdLine, domain = null, timeoutMs = WMI_CONNECT_TIMEOUT, options = {}) {
   const command = `cmd.exe /c ${cmdLine}`;
-  logger.debug(`WMI cmd on ${host}: ${cmdLine.slice(0, 80)} (timeout ${timeoutMs}ms)`);
-  return runWmiCommand(host, username, password, command, domain, timeoutMs);
+  const mode = options.silent && options.noOutput ? ' [async]' : '';
+  logger.debug(`WMI cmd on ${host}: ${cmdLine.slice(0, 80)} (timeout ${timeoutMs}ms)${mode}`);
+  return runWmiCommand(host, username, password, command, domain, timeoutMs, options);
+}
+
+/** Fire-and-forget WMI command — returns after process launch, not completion. */
+async function runWmiCmdAsync(host, username, password, cmdLine, domain = null, timeoutMs = WMI_CONNECT_TIMEOUT) {
+  return runWmiCmd(host, username, password, cmdLine, domain, timeoutMs, { silent: true, noOutput: true });
 }
 
 module.exports = {
   runWmiCommand,
   runWmiPowershell,
   runWmiCmd,
+  runWmiCmdAsync,
   runWmiProbe,
   cleanOutput,
   resolveWmiexec,

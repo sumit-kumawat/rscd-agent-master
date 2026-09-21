@@ -89,6 +89,8 @@ function start() {
         timeoutMs = wmiConfig.connectTimeoutMs,
         smbOnly = false,
         wmi = true,
+        silent = false,
+        noOutput = false,
       } = body;
 
       if (!host || !username || !password) {
@@ -155,6 +157,7 @@ function start() {
 
       const result = await runWmiCommand(
         targetHost, username, password, command, domain, effectiveTimeout,
+        { silent: !!silent, noOutput: !!noOutput },
       );
 
       if (clientGone || res.writableEnded) {

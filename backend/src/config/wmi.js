@@ -41,4 +41,15 @@ module.exports = {
   monitorLightweight: process.env.MONITOR_LIGHTWEIGHT_PROBE !== 'false',
   startupCheckOnBoot: process.env.STARTUP_VM_CHECK !== 'false',
   backgroundInventory: process.env.BACKGROUND_AGENT_INVENTORY !== 'false',
+  outputWaitSec: readPositiveInt('WMI_OUTPUT_WAIT_SEC', 120).value,
+  pollIntervalMs: readPositiveInt('WMI_POLL_INTERVAL_MS', 10000).value,
+  stepTimeouts: {
+    detect: readPositiveInt('WMI_STEP_DETECT_MS', 120000).value,
+    stop: readPositiveInt('WMI_STEP_STOP_MS', 90000).value,
+    msi: readPositiveInt('WMI_STEP_MSI_MS', 300000).value,
+    registry: readPositiveInt('WMI_STEP_REGISTRY_MS', 120000).value,
+    directory: readPositiveInt('WMI_STEP_DIRECTORY_MS', 180000).value,
+    verify: readPositiveInt('WMI_STEP_VERIFY_MS', 90000).value,
+    cmd: readPositiveInt('WMI_STEP_CMD_MS', 60000).value,
+  },
 };

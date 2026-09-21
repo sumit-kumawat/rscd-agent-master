@@ -149,6 +149,9 @@ class UninstallService {
       try {
         const result = await winRemote.runUninstall(plain, {
           onLog: (level, message) => updater.log(level, message, plain.name),
+          onStep: (progress) => {
+            io?.emit('job:vm-step', { jobId, vm: plain.name, ...progress });
+          },
         });
 
         if (result.alreadyRemoved) {

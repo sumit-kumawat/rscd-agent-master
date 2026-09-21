@@ -1,9 +1,22 @@
 const logger = require('../utils/logger');
 const agentProbe = require('./agentProbe');
-const { runWmiPowershell, runWmiCmd, WMI_TIMEOUT } = require('../utils/wmiExec');
+const wmiConfig = require('../config/wmi');
+const {
+  runWmiPowershell,
+  runWmiCmd,
+  runWmiCmdAsync,
+  WMI_TIMEOUT,
+} = require('../utils/wmiExec');
 const { toVmPlain } = require('../utils/vmPlain');
 const { isAgentRemoved } = require('../utils/agentStatus');
 const { DEFAULT_INSTALL_ROOT } = require('../utils/hosts');
+
+const STEP_TIMEOUTS = wmiConfig.stepTimeouts;
+const POLL_INTERVAL_MS = wmiConfig.pollIntervalMs;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 const RSCD_ROOT = DEFAULT_INSTALL_ROOT;
 
@@ -80,19 +93,86 @@ class WinRemoteService {
     return agentProbe.connectWmi(vm);
   }
 
-  async _wmiCmd(session, cmdLine) {
-    return runWmiCmd(
+  async _wmiCmd(session, cmdLine, options = {}) {
+    const timeoutMs = options.timeoutMs ?? STEP_TIMEOUTS.cmd;
+    const execOpts = {};
+    if (options.async) {
+      execOpts.silent = true;
+      execOpts.noOutput = true;
+    }
+    const runner = options.async ? runWmiCmdAsync : runWmiCmd;
+    return runner(
       session.host,
       session.username,
       session.password,
       cmdLine,
       session.domain || null,
-      WMI_TIMEOUT,
+      timeoutMs,
+      execOpts,
     );
   }
 
-  async _wmiPs(session, script) {
-    return runWmiPowershell(session.host, session.username, session.password, script, session.domain || null);
+  async _wmiPs(session, script, timeoutMs = STEP_TIMEOUTS.detect) {
+    return runWmiPowershell(
+      session.host,
+      session.username,
+      session.password,
+      script,
+      session.domain || null,
+      timeoutMs,
+    );
+  }
+
+  async _withRetry(label, fn, onLog, retries = 1) {
+    let lastErr;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastErr = err;
+        const retryable = /timeout|timed out|sharing violation/i.test(err.message || '');
+        if (attempt < retries && retryable) {
+          onLog(`${label} timed out — retrying (${attempt + 1}/${retries})`, 'warning');
+          await sleep(3000);
+        } else {
+          throw err;
+        }
+      }
+    }
+    throw lastErr;
+  }
+
+  async _pollMsiRemoval(session, code, onLog, timeoutMs = STEP_TIMEOUTS.msi) {
+    const bare = code.replace(/[{}]/g, '');
+    const started = Date.now();
+    let lastHeartbeat = 0;
+
+    while (Date.now() - started < timeoutMs) {
+      try {
+        const r = await this._wmiCmd(
+          session,
+          `reg query "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${code}" /v DisplayName`,
+          { timeoutMs: STEP_TIMEOUTS.cmd },
+        );
+        if (!String(r.stdout || '').toLowerCase().includes(bare.toLowerCase())) {
+          onLog(`MSI product removed from registry — ${code}`, 'success');
+          return true;
+        }
+      } catch {
+        onLog(`MSI product removed from registry — ${code}`, 'success');
+        return true;
+      }
+
+      const elapsed = Math.round((Date.now() - started) / 1000);
+      if (elapsed - lastHeartbeat >= 30) {
+        lastHeartbeat = elapsed;
+        onLog(`MSI uninstall in progress… (${elapsed}s elapsed)`, 'info');
+      }
+      await sleep(POLL_INTERVAL_MS);
+    }
+
+    onLog(`MSI uninstall poll timed out after ${Math.round(timeoutMs / 1000)}s — ${code}`, 'warning');
+    return false;
   }
 
   async detectAgent(session, hintRoot) {
@@ -110,7 +190,11 @@ class WinRemoteService {
   /** Step 1 — Detect RSCD service and Programs & Features entries. */
   async _detectServiceState(session, onLog) {
     onLog('Step 1 — Detecting RSCD service and Programs & Features entries…');
-    const r = await this._wmiPs(session, SERVICE_DETECT_SCRIPT);
+    const r = await this._withRetry(
+      'Detection',
+      () => this._wmiPs(session, SERVICE_DETECT_SCRIPT, STEP_TIMEOUTS.detect),
+      onLog,
+    );
     const state = parseServiceDetect(r.stdout);
 
     if (state.serviceInstalled) {
@@ -140,8 +224,9 @@ class WinRemoteService {
     if (running) {
       onLog('RSCD service is Running — issuing stop command');
       try {
-        await this._wmiCmd(session, 'net stop RSCD /y');
-        onLog('RSCD service stopped', 'success');
+        await this._wmiCmd(session, 'net stop RSCD /y', { async: true, timeoutMs: STEP_TIMEOUTS.stop });
+        await sleep(5000);
+        onLog('RSCD stop command issued', 'success');
       } catch (err) {
         onLog(`net stop RSCD failed: ${err.message} — attempting taskkill`, 'warning');
       }
@@ -150,7 +235,11 @@ class WinRemoteService {
     }
 
     try {
-      await this._wmiCmd(session, 'taskkill /F /IM RSCD.exe /IM agentctl.exe /IM blagent.exe');
+      await this._wmiCmd(
+        session,
+        'taskkill /F /IM RSCD.exe /IM agentctl.exe /IM blagent.exe',
+        { async: true, timeoutMs: STEP_TIMEOUTS.stop },
+      );
       onLog('RSCD processes terminated (if any were running)');
     } catch {
       onLog('No RSCD processes required termination');
@@ -168,9 +257,19 @@ class WinRemoteService {
     for (const code of codes) {
       onLog(`msiexec /qn /x ${code} — uninstall initiated`);
       try {
-        await this._wmiCmd(session, `msiexec /qn /x ${code} REBOOT=ReallySuppress /norestart`);
-        onLog(`Programs & Features uninstall completed — ${code}`, 'success');
-        results.push(`msi:${code}:ok`);
+        await this._wmiCmd(
+          session,
+          `msiexec /qn /x ${code} REBOOT=ReallySuppress /norestart`,
+          { async: true, timeoutMs: STEP_TIMEOUTS.cmd },
+        );
+        const removed = await this._pollMsiRemoval(session, code, onLog, STEP_TIMEOUTS.msi);
+        if (removed) {
+          onLog(`Programs & Features uninstall completed — ${code}`, 'success');
+          results.push(`msi:${code}:ok`);
+        } else {
+          onLog(`msiexec may still be running — ${code}`, 'warning');
+          results.push(`msi:${code}:pending`);
+        }
       } catch (err) {
         onLog(`msiexec uninstall failed — ${code}: ${err.message}`, 'error');
         results.push(`msi:${code}:fail`);
@@ -181,7 +280,7 @@ class WinRemoteService {
 
   async _removeServiceRegistration(session, onLog) {
     try {
-      await this._wmiCmd(session, 'sc delete RSCD');
+      await this._wmiCmd(session, 'sc delete RSCD', { async: true, timeoutMs: STEP_TIMEOUTS.cmd });
       onLog('RSCD service registration removed');
     } catch {
       // service may already be removed by MSI
@@ -191,8 +290,12 @@ class WinRemoteService {
   /** Step 4 — Remove registry keys (Programs & Features + BladeLogic). */
   async _cleanupRegistry(session, onLog) {
     onLog('Step 4 — Removing registry entries…');
-    try { await this._wmiCmd(session, 'reg delete "HKLM\\SOFTWARE\\BladeLogic" /f'); } catch { /* */ }
-    try { await this._wmiCmd(session, 'reg delete "HKLM\\SOFTWARE\\WOW6432Node\\BladeLogic" /f'); } catch { /* */ }
+    try {
+      await this._wmiCmd(session, 'reg delete "HKLM\\SOFTWARE\\BladeLogic" /f', { async: true });
+    } catch { /* */ }
+    try {
+      await this._wmiCmd(session, 'reg delete "HKLM\\SOFTWARE\\WOW6432Node\\BladeLogic" /f', { async: true });
+    } catch { /* */ }
     const script = [
       '$ErrorActionPreference="SilentlyContinue"',
       'foreach($u in "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall","HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall"){',
@@ -202,7 +305,11 @@ class WinRemoteService {
       '  }',
       '}',
     ].join('\n');
-    await this._wmiPs(session, script);
+    await this._withRetry(
+      'Registry cleanup',
+      () => this._wmiPs(session, script, STEP_TIMEOUTS.registry),
+      onLog,
+    );
     onLog('Registry cleanup completed', 'success');
   }
 
@@ -217,7 +324,11 @@ class WinRemoteService {
           onLog(`Directory already absent: ${root}`);
           continue;
         }
-        await this._wmiCmd(session, `if exist "${root}" rmdir /s /q "${root}"`);
+        await this._wmiCmd(session, `if exist "${root}" rmdir /s /q "${root}"`, {
+          async: true,
+          timeoutMs: STEP_TIMEOUTS.directory,
+        });
+        await sleep(3000);
         const after = await this._wmiPs(session, `if(Test-Path '${root.replace(/'/g, "''")}'){Write-Output 'EXISTS'}else{Write-Output 'GONE'}`);
         if (/GONE/i.test(after.stdout)) {
           onLog(`Directory removed: ${root}`, 'success');
@@ -244,7 +355,7 @@ class WinRemoteService {
       'if(Get-Service *rsc*,*bladelogic* -EA 0){ Write-Output "PARTIAL:service"; exit }',
       'Write-Output "OK:removed"',
     ].join('\n');
-    const r = await this._wmiPs(session, script);
+    const r = await this._wmiPs(session, script, STEP_TIMEOUTS.verify);
     return parseUninstallOutput(r.stdout || '');
   }
 
@@ -266,6 +377,10 @@ class WinRemoteService {
     const onLog = (message, level = 'info') => {
       if (options.onLog) options.onLog(level, message);
     };
+    const onStep = (step, total, label) => {
+      if (options.onStep) options.onStep({ step, total, label, percent: Math.round(((step - 1) / total) * 100) });
+    };
+    const TOTAL_STEPS = 6;
 
     if (isAgentRemoved(plain)) {
       onLog('Agent already marked Removed in database — skipping uninstall', 'info');
@@ -286,7 +401,20 @@ class WinRemoteService {
     const session = await this.connectWmi(plain);
     onLog(`WMI connection successful (${session.username}@${session.host})`, 'success');
 
-    const agent = await this.detectAgent(session, plain.installRoot);
+    onStep(1, TOTAL_STEPS, 'Detect agent');
+    let agent;
+    try {
+      agent = await this.detectAgent(session, plain.installRoot);
+    } catch (err) {
+      logger.debug(`Agent inventory skipped for ${plain.name}: ${err.message}`);
+      agent = {
+        installed: true,
+        version: plain.version || 'unknown',
+        installRoot: plain.installRoot || RSCD_ROOT,
+        installRoots: [plain.installRoot || RSCD_ROOT],
+        codes: [],
+      };
+    }
     const serviceState = await this._detectServiceState(session, onLog);
 
     const codes = [...new Set([...agent.codes, ...serviceState.productCodes])];
@@ -312,12 +440,17 @@ class WinRemoteService {
       onLog(`Agent discovered — v${agent.version} @ ${agent.installRoot || RSCD_ROOT}`);
     }
 
+    onStep(2, TOTAL_STEPS, 'Stop service');
     await this._stopServiceIfRunning(session, serviceState, onLog);
+    onStep(3, TOTAL_STEPS, 'MSI uninstall');
     const msiResults = await this._msiUninstall(session, codes, onLog);
     await this._removeServiceRegistration(session, onLog);
+    onStep(4, TOTAL_STEPS, 'Registry cleanup');
     await this._cleanupRegistry(session, onLog);
+    onStep(5, TOTAL_STEPS, 'Directory cleanup');
     await this._cleanupDirectories(session, agent.installRoots, onLog);
 
+    onStep(6, TOTAL_STEPS, 'Verify removal');
     onLog('Verifying remote removal state…');
     let verified = await this._verifyRemoved(session, agent.installRoots);
     if (!verified.success) {
