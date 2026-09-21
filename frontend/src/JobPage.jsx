@@ -1,19 +1,30 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, Loader2 } from 'lucide-react';
 import api from './api';
 import { getSocket, onSocket } from './socket';
 import { useToast } from './components/Toast';
+import { patchJob } from './utils/jobSockets';
 
 function Badge({ status }) {
   const m = { completed: 'badge-online', failed: 'badge-offline', running: 'badge-progress', pending: 'badge-excluded', cancelled: 'badge-excluded' };
   return <span className={`badge ${m[status] || 'badge-excluded'}`}>{status}</span>;
 }
 
+const STEP_LABELS = [
+  'Detect agent',
+  'Stop service',
+  'MSI uninstall',
+  'Registry cleanup',
+  'Directory cleanup',
+  'Verify removal',
+];
+
 export default function JobPage() {
   const { id } = useParams();
   const [job, setJob] = useState(null);
   const [logs, setLogs] = useState([]);
+  const [vmSteps, setVmSteps] = useState({});
   const endRef = useRef(null);
   const toast = useToast();
 
@@ -27,13 +38,46 @@ export default function JobPage() {
 
   useEffect(() => {
     getSocket().emit('join:job', id);
-    const off1 = onSocket('job:progress', (d) => { if (String(d.jobId) === id) load(); });
-    const off2 = onSocket('job:completed', (d) => { if (String(d.jobId) === id) { load(); toast('Job finished', 'info'); } });
-    const off3 = onSocket('log:new', (d) => {
+
+    const applyJob = (data) => {
+      if (String(data.jobId) !== id) return;
+      setJob((prev) => patchJob(prev, data));
+    };
+
+    const off1 = onSocket('job:progress', applyJob);
+    const off2 = onSocket('job:started', applyJob);
+    const off3 = onSocket('job:completed', (d) => {
+      if (String(d.jobId) !== id) return;
+      const status = d.job?.status || 'completed';
+      setJob((prev) => patchJob(prev, { ...d, status, progress: 100 }));
+      setVmSteps({});
+      toast('Job finished', 'info');
+      load();
+    });
+    const off4 = onSocket('job:cancelled', (d) => {
+      if (String(d.jobId) !== id) return;
+      setJob((prev) => patchJob(prev, { ...d, status: 'cancelled' }));
+      setVmSteps({});
+      toast('Job cancelled', 'info');
+    });
+    const off5 = onSocket('log:new', (d) => {
       if (String(d.jobId) !== id) return;
       setLogs((prev) => [...prev, d.entry].slice(-500));
     });
-    return () => { off1(); off2(); off3(); };
+    const off6 = onSocket('job:vm-step', (d) => {
+      if (String(d.jobId) !== id) return;
+      setVmSteps((prev) => ({
+        ...prev,
+        [d.vm]: {
+          step: d.step,
+          total: d.total,
+          label: d.label,
+          percent: d.percent ?? Math.round(((d.step - 1) / d.total) * 100),
+        },
+      }));
+    });
+
+    return () => { off1(); off2(); off3(); off4(); off5(); off6(); };
   }, [id, toast]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [logs]);
@@ -51,12 +95,14 @@ export default function JobPage() {
 
   const logColor = (l) => ({ error: 'log-msg-error', warning: 'log-msg-warning', success: 'log-msg-success' }[l] || '');
   const running = ['pending', 'running'].includes(job.status);
+  const activeSteps = Object.entries(vmSteps);
+  const progress = job.progress || 0;
 
   const cancel = async () => {
     if (!confirm('Cancel this job?')) return;
     try {
       await api.post(`/jobs/${id}/cancel`, {});
-      load();
+      setJob((prev) => ({ ...prev, status: 'cancelled' }));
       toast('Job cancelled', 'info');
     } catch (e) {
       toast(e.message, 'error');
@@ -76,15 +122,42 @@ export default function JobPage() {
       </div>
 
       <div className="page-panel page-panel-scroll">
-        {running && <div className="alert alert-danger">Uninstalling agents via WMI…</div>}
+        {running && (
+          <div className="alert alert-danger live-banner">
+            <Loader2 className="spin" size={14} />
+            <span>Uninstalling agents via WMI — live progress updates</span>
+          </div>
+        )}
 
         <div className="progress-block">
           <div className="progress-header">
             <span>Progress</span>
-            <span>{job.progress || 0}%</span>
+            <span className="progress-pct">{progress}%</span>
           </div>
-          <div className="progress-track"><div className="progress-fill" style={{ width: `${job.progress || 0}%` }} /></div>
+          <div className="progress-track">
+            <div
+              className={`progress-fill ${running ? 'progress-fill-live' : ''}`}
+              style={{ width: `${progress}%` }}
+            />
+          </div>
         </div>
+
+        {running && activeSteps.length > 0 && (
+          <div className="vm-step-panel">
+            <div className="panel-section-title">Active VMs</div>
+            {activeSteps.map(([vm, s]) => (
+              <div key={vm} className="vm-step-row">
+                <div className="vm-step-header">
+                  <span className="vm-step-host">{vm}</span>
+                  <span className="vm-step-label">Step {s.step}/{s.total}: {s.label || STEP_LABELS[s.step - 1] || 'Working'}</span>
+                </div>
+                <div className="progress-track progress-track-sm">
+                  <div className="progress-fill progress-fill-live" style={{ width: `${s.percent || 0}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="card-grid">
           <div className="card stat-card">
@@ -99,13 +172,19 @@ export default function JobPage() {
             <div className="stat-label">Skipped</div>
             <div className="stat-value">{job.statistics?.skipped || 0}</div>
           </div>
+          <div className="card stat-card">
+            <div className="stat-label">Total</div>
+            <div className="stat-value">{job.statistics?.total || 0}</div>
+          </div>
         </div>
 
         <div className="panel-section-title">Job Log</div>
         <div className="job-log">
           {logs.length === 0 ? <span className="muted">Waiting…</span> : logs.map((log, i) => (
             <div key={i} className={`job-log-line ${logColor(log.level)}`}>
-              <span className="log-time-inline">[{new Date(log.timestamp).toLocaleTimeString()}]</span> {log.message}
+              <span className="log-time-inline">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+              {log.vm ? <span className="log-vm-tag">[{log.vm}]</span> : null}
+              {' '}{log.message}
             </div>
           ))}
           <div ref={endRef} />

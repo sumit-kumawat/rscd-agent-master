@@ -21,6 +21,9 @@ function emitVmStatus(io, vm, result) {
     version: vm.version,
     lastCheck: vm.lastCheck,
     lastProbeError: vm.lastProbeError,
+    powerState: vm.powerState,
+    lastSeenAt: vm.lastSeenAt,
+    localUsers: vm.localUsers,
   });
 }
 

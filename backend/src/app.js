@@ -1,5 +1,24 @@
 require('dotenv').config();
 const path = require('path');
+const fs = require('fs');
+
+function readAppVersion() {
+  const candidates = [
+    path.join(__dirname, '../../version.txt'),
+    path.join(__dirname, '../version.txt'),
+  ];
+  for (const file of candidates) {
+    try {
+      const v = fs.readFileSync(file, 'utf8').trim();
+      if (v) return v;
+    } catch {
+      // try next path
+    }
+  }
+  return '2.0.1';
+}
+
+const APP_VERSION = readAppVersion();
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -13,6 +32,7 @@ const jobRoutes = require('./api/routes/jobs');
 const logRoutes = require('./api/routes/logs');
 const searchRoutes = require('./api/routes/search');
 const systemRoutes = require('./api/routes/system');
+const dashboardRoutes = require('./api/routes/dashboard');
 
 const isProd = process.env.NODE_ENV === 'production';
 const corsOrigin = process.env.CORS_ORIGIN || '*';
@@ -33,6 +53,8 @@ app.use((req, res, next) => {
 });
 app.use(cors({ origin: corsOrigin === '*' ? true : corsOrigin.split(',') }));
 app.use(express.json({ limit: '20mb' }));
+const { attachActor } = require('./middleware/actor');
+app.use(attachActor);
 
 app.get('/health', (req, res) => {
   let wmi = {};
@@ -51,7 +73,7 @@ app.get('/health', (req, res) => {
     status: 'ok',
     platform: 'windows-only',
     connectivity: 'wmi',
-    version: '2.0.0',
+    version: APP_VERSION,
     wmi,
   });
 });
@@ -61,6 +83,7 @@ app.use('/api/jobs', jobRoutes);
 app.use('/api/logs', logRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/system', systemRoutes);
+app.use('/api/dashboard', dashboardRoutes);
 
 const publicDir = path.join(__dirname, '../public');
 app.use(express.static(publicDir));
@@ -92,7 +115,7 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 
 connectDB().then(() => {
   server.listen(PORT, () => {
-    logger.info(`RSCD Manager ${isProd ? '(production)' : '(dev)'} on port ${PORT}`);
+    logger.info(`RSCD Manager v${APP_VERSION} ${isProd ? '(production)' : '(dev)'} on port ${PORT}`);
     if (isProd && !process.env.OPERATOR_API_KEY) {
       logger.error(
         'OPERATOR_API_KEY not set — destructive API actions are blocked until a key is configured',

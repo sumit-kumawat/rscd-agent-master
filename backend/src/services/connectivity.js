@@ -52,6 +52,8 @@ async function checkAndUpdate(vm, options = {}) {
 
   if (probe.connectivityState === CONNECTIVITY_STATES.ONLINE) {
     updates.status = plain.excluded ? 'excluded' : 'online';
+    updates.powerState = 'on';
+    updates.lastSeenAt = new Date();
     updates.wmiReachable = true;
     updates.authStatus = 'allowed';
     updates.connectivityMethod = 'wmi';
@@ -67,6 +69,9 @@ async function checkAndUpdate(vm, options = {}) {
     }
   } else {
     updates.status = mapConnectivityToStatus(probe, plain);
+    if (['unreachable', 'timeout', 'offline'].includes(probe.connectivityState)) {
+      updates.powerState = 'off';
+    }
     updates.wmiReachable = false;
     updates.authStatus = (probe.connectivityState === CONNECTIVITY_STATES.AUTH_FAILED || probe.connectivityState === CONNECTIVITY_STATES.PERMISSION_DENIED)
       ? 'denied'

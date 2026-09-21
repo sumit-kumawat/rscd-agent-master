@@ -43,8 +43,11 @@ module.exports = {
   backgroundInventory: process.env.BACKGROUND_AGENT_INVENTORY !== 'false',
   outputWaitSec: readPositiveInt('WMI_OUTPUT_WAIT_SEC', 120).value,
   pollIntervalMs: readPositiveInt('WMI_POLL_INTERVAL_MS', 10000).value,
+  queryTimeoutMs: readPositiveInt('WMI_QUERY_TIMEOUT_MS', 30000).value,
+  stepTimeoutMs: readPositiveInt('WMI_STEP_TIMEOUT_MS', 300000).value,
+  queryRetryBackoffMs: [2000, 5000, 10000],
   stepTimeouts: {
-    detect: readPositiveInt('WMI_STEP_DETECT_MS', 120000).value,
+    detect: readPositiveInt('WMI_STEP_DETECT_MS', readPositiveInt('WMI_STEP_TIMEOUT_MS', 300000).value).value,
     stop: readPositiveInt('WMI_STEP_STOP_MS', 90000).value,
     msi: readPositiveInt('WMI_STEP_MSI_MS', 300000).value,
     registry: readPositiveInt('WMI_STEP_REGISTRY_MS', 120000).value,

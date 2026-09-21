@@ -1,14 +1,14 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import {
-  RefreshCw, Plus, Upload, Search, Trash2, Pencil, Unplug, Activity, Loader2, ShieldCheck, ShieldAlert,
+  RefreshCw, Plus, Upload, Search, Trash2, Power, Loader2,
 } from 'lucide-react';
 import api from './api';
 import { onSocket } from './socket';
 import { useToast } from './components/Toast';
 import { useSearch } from './context/SearchContext';
 import { useRefresh } from './context/RefreshContext';
-import RowActionsMenu from './components/RowActionsMenu';
+import EndpointLightbox, { LocalUsersCell, PowerBadge } from './components/EndpointLightbox';
 
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 
@@ -21,25 +21,18 @@ function isRemoved(vm) {
   return vm.agentStatus === 'removed' || vm.version === 'removed';
 }
 
-const CONNECTIVITY_LABELS = {
-  online: 'online',
-  auth_failed: 'auth failed',
-  timeout: 'timeout',
-  unreachable: 'unreachable',
-  relay_unavailable: 'relay down',
-  wmi_unavailable: 'wmi unavailable',
-  permission_denied: 'denied',
-  dns_failed: 'dns failed',
-  offline: 'offline',
-  unknown: 'unknown',
-};
-
-function connectivityLabel(vm) {
+function healthLabel(vm) {
   if (vm.excluded) return 'excluded';
-  if (vm.connectivityState && CONNECTIVITY_LABELS[vm.connectivityState]) {
-    return CONNECTIVITY_LABELS[vm.connectivityState];
-  }
-  return vm.status === 'online' ? 'online' : 'offline';
+  if (vm.status === 'in_progress') return 'busy';
+  if (vm.connectivityState === 'online' || vm.status === 'online') return 'healthy';
+  if (vm.connectivityState) return vm.connectivityState;
+  return vm.status || 'unknown';
+}
+
+function HealthBadge({ vm }) {
+  const h = healthLabel(vm);
+  const cls = h === 'healthy' ? 'badge-online' : h === 'busy' ? 'badge-progress' : 'badge-offline';
+  return <span className={`badge ${cls}`}>{h}</span>;
 }
 
 const emptyForm = () => ({
@@ -60,10 +53,7 @@ function VmModal({ vm, onClose, onSaved, onChecking }) {
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
   const save = async () => {
-    if (!form.name.trim()) {
-      toast('Hostname is required', 'error');
-      return;
-    }
+    if (!form.name.trim()) { toast('Hostname is required', 'error'); return; }
     setSaving(true);
     try {
       const payload = { ...form, ip: form.ip.trim() };
@@ -91,22 +81,13 @@ function VmModal({ vm, onClose, onSaved, onChecking }) {
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3 style={{ margin: '0 0 14px', fontSize: 16 }}>{isNew ? 'Add VM' : 'Edit VM'}</h3>
         <label className="field"><span>Hostname / FQDN</span>
-          <input className="input" value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="ome or ome.corp.helixops.ai" /></label>
-        <label className="field"><span>IP Address (optional — discovered via WMI on Check)</span>
-          <input className="input" value={form.ip} onChange={(e) => set('ip', e.target.value)} placeholder="Auto-discovered" /></label>
+          <input className="input" value={form.name} onChange={(e) => set('name', e.target.value)} /></label>
+        <label className="field"><span>IP Address (optional)</span>
+          <input className="input" value={form.ip} onChange={(e) => set('ip', e.target.value)} /></label>
         <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <input type="checkbox" checked={form.excluded} onChange={(e) => set('excluded', e.target.checked)} />
           <span>Excluded from jobs</span>
         </label>
-        <details style={{ marginBottom: 12 }}>
-          <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--muted)' }}>WMI credentials (optional override)</summary>
-          <label className="field" style={{ marginTop: 10 }}><span>Domain</span>
-            <input className="input" value={form.wmiDomain} onChange={(e) => set('wmiDomain', e.target.value)} placeholder="e.g. BMC or CORP" /></label>
-          <label className="field"><span>Username</span>
-            <input className="input" value={form.wmiUsername} onChange={(e) => set('wmiUsername', e.target.value)} placeholder="e.g. rdsroot (blank = first RSCD_OS_USERS entry)" /></label>
-          <label className="field"><span>Password</span>
-            <input className="input" type="password" value={form.wmiPassword} onChange={(e) => set('wmiPassword', e.target.value)} placeholder={vm?.wmiUsername ? '••••••••' : ''} /></label>
-        </details>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button className="btn btn-outline" onClick={onClose}>Cancel</button>
           <button className="btn btn-primary" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save'}</button>
@@ -116,86 +97,21 @@ function VmModal({ vm, onClose, onSaved, onChecking }) {
   );
 }
 
-function ConnBadge({ vm, isChecking }) {
-  if (isChecking) {
-    return (
-      <span className="badge badge-checking" title="Checking status…">
-        <Loader2 className="spin" size={12} />
-        <span>Checking…</span>
-      </span>
-    );
-  }
-  const label = connectivityLabel(vm);
-  const state = vm.connectivityState || (vm.status === 'online' ? 'online' : 'offline');
-  const cls = {
-    online: 'badge-online',
-    offline: 'badge-offline',
-    excluded: 'badge-excluded',
-    auth_failed: 'badge-offline',
-    timeout: 'badge-offline',
-    unreachable: 'badge-offline',
-    relay_unavailable: 'badge-offline',
-    wmi_unavailable: 'badge-offline',
-    permission_denied: 'badge-offline',
-    dns_failed: 'badge-offline',
-    unknown: 'badge-offline',
-  }[state] || 'badge-offline';
-  return <span className={`badge ${cls}`} title={vm.lastProbeError || ''}>{label}</span>;
-}
-
-function AuthBadge({ vm }) {
-  const auth = vm.authStatus || (
-    vm.status === 'online'
-      ? 'allowed'
-      : (vm.connectivityState === 'auth_failed' || vm.connectivityState === 'permission_denied' ? 'denied' : 'unknown')
-  );
-  if (auth === 'allowed') {
-    return (
-      <span className="badge badge-auth-allowed" title="WMI Windows authentication allowed">
-        <ShieldCheck size={12} />
-        <span>Allowed</span>
-      </span>
-    );
-  }
-  if (auth === 'denied') {
-    return (
-      <span className="badge badge-auth-denied" title="WMI Windows authentication denied or logon failed">
-        <ShieldAlert size={12} />
-        <span>Denied</span>
-      </span>
-    );
-  }
-  return (
-    <span className="badge badge-auth-unknown" title="Authentication status unknown until checked">
-      <span>—</span>
-    </span>
-  );
-}
-
-function AgentBadge({ vm }) {
-  const removed = isRemoved(vm);
-  return (
-    <span className={`badge ${removed ? 'badge-agent-removed' : 'badge-agent-active'}`}>
-      {removed ? 'Removed' : 'Active'}
-    </span>
-  );
-}
-
 export default function VmsPage() {
+  const location = useLocation();
   const [vms, setVms] = useState([]);
   const { search } = useSearch();
   const { tick } = useRefresh();
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [connFilter, setConnFilter] = useState('');
-  const [agentFilter, setAgentFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState([]);
   const [modal, setModal] = useState(null);
-  const [checking, setChecking] = useState({});
-  const [uninstalling, setUninstalling] = useState({});
-  const [openMenuId, setOpenMenuId] = useState(null);
+  const [lightbox, setLightbox] = useState(null);
+  const [lightboxTab, setLightboxTab] = useState('overview');
+  const [bulkPowerAction, setBulkPowerAction] = useState('');
+  const [bulkPassword, setBulkPassword] = useState('');
   const fileRef = useRef(null);
-  const nav = useNavigate();
   const toast = useToast();
 
   useEffect(() => {
@@ -209,7 +125,6 @@ export default function VmsPage() {
       const params = new URLSearchParams();
       if (debouncedSearch) params.set('search', debouncedSearch);
       if (connFilter) params.set('status', connFilter);
-      if (agentFilter) params.set('agentStatus', agentFilter);
       const v = await api.get(`/vms?${params}`);
       setVms(v.data || []);
     } catch (e) {
@@ -217,34 +132,44 @@ export default function VmsPage() {
     } finally {
       setLoading(false);
     }
-  }, [debouncedSearch, connFilter, agentFilter, toast]);
+  }, [debouncedSearch, connFilter, toast]);
 
   useEffect(() => { load(); }, [load, tick]);
 
+  const openLightbox = (vm, tab = 'overview') => {
+    setLightboxTab(tab);
+    setLightbox(vm);
+  };
+
+  useEffect(() => {
+    const openId = location.state?.openVmId;
+    if (!openId || !vms.length) return;
+    const vm = vms.find((v) => String(v._id) === String(openId));
+    if (vm) openLightbox(vm);
+  }, [location.state?.openVmId, vms]);
+
+  const closeLightbox = () => {
+    setLightbox(null);
+    setLightboxTab('overview');
+  };
+
   useEffect(() => onSocket('vm:status', (d) => {
     if (!d?.vmId) return;
-    setChecking((c) => {
-      const next = { ...c };
-      delete next[d.vmId];
-      return next;
-    });
-    setVms((prev) => {
-      const exists = prev.some((vm) => String(vm._id) === String(d.vmId));
-      const patch = {
+    setVms((prev) => prev.map((vm) => String(vm._id) === String(d.vmId)
+      ? {
+        ...vm,
         status: d.status,
         connectivityState: d.connectivityState,
         authStatus: d.authStatus,
-        lastProbeError: d.lastProbeError,
         agentStatus: d.agentStatus,
         ip: d.ip,
         version: d.version,
         lastCheck: d.lastCheck,
-      };
-      if (!exists) {
-        return [...prev, { _id: d.vmId, name: d.name || d.vmId, ...patch }].sort((a, b) => a.name.localeCompare(b.name));
+        powerState: d.powerState || vm.powerState,
+        lastSeenAt: d.lastSeenAt || vm.lastSeenAt,
+        localUsers: d.localUsers || vm.localUsers,
       }
-      return prev.map((vm) => String(vm._id) === String(d.vmId) ? { ...vm, ...patch } : vm);
-    });
+      : vm));
   }), []);
 
   useEffect(() => onSocket('vms:deleted', () => load()), [load]);
@@ -266,130 +191,69 @@ export default function VmsPage() {
         toast('Use .txt or .xlsx', 'error');
         return;
       }
-      toast(`Imported ${r.created} new — checking status…`, 'info');
+      toast(`Imported ${r.created} new`, 'info');
       load();
-      if (r.checkQueued) {
-        setLoading(false);
-      }
     } catch (err) {
       toast(err.message, 'error');
     }
     e.target.value = '';
   };
 
-  const deleteVm = async (vm) => {
-    if (isRemoved(vm)) {
-      toast('Removed agents cannot be deleted', 'error');
-      return;
-    }
-    if (!confirm(`Delete ${vm.name}? All related jobs will be removed.`)) return;
+  const bulkPower = async () => {
+    if (!bulkPowerAction || !bulkPassword || !selected.length) return;
+    if (!confirm(`Run ${bulkPowerAction} on ${selected.length} endpoint(s)?`)) return;
     try {
-      const r = await api.delete(`/vms/${vm._id}`);
-      toast(`Deleted — ${r.deletedJobs || 0} job(s) removed`, 'success');
+      const r = await api.post('/vms/bulk-power', { ids: selected, action: bulkPowerAction, password: bulkPassword });
+      const ok = r.results?.filter((x) => x.ok).length || 0;
+      toast(`Power action sent to ${ok}/${selected.length} endpoints`, ok ? 'success' : 'warning');
       load();
     } catch (e) {
       toast(e.message, 'error');
     }
   };
 
-  const uninstallVm = async (vm) => {
-    if (!confirm(`Uninstall RSCD agent on ${vm.name} via WMI?\n\nThis will stop the service, remove the agent, and clean up Program Files.`)) return;
-    setUninstalling((u) => ({ ...u, [vm._id]: true }));
-    try {
-      const r = await api.post(`/vms/${vm._id}/uninstall`, {});
-      toast('Uninstall job started — opening realtime execution monitor…', 'info');
-      const jobId = (r.data || r.job)?._id;
-      if (jobId) {
-        nav(`/jobs/${jobId}`);
-      }
-    } catch (e) {
-      toast(e.message, 'error');
-    } finally {
-      setUninstalling((u) => ({ ...u, [vm._id]: false }));
-    }
-  };
-
-  const checkVm = async (vm) => {
-    setChecking((c) => ({ ...c, [vm._id]: true }));
-    try {
-      const r = await api.post(`/vms/${vm._id}/check`, {});
-      const probe = r.probe || {};
-      const conn = probe.connectivityState || probe.connectivity || r.data?.connectivityState;
-      const agent = probe.agentStatus || r.data?.agentStatus;
-      const connLabel = CONNECTIVITY_LABELS[conn] || conn || 'unknown';
-      if (probe.error) {
-        const short = probe.error.length > 120 ? `${probe.error.slice(0, 120)}…` : probe.error;
-        toast(`${vm.name}: ${connLabel} — ${short}`, 'error');
-      } else {
-        toast(`${vm.name}: ${connLabel}, agent ${agent}`, 'success');
-      }
-      if (r.data) {
-        setVms((prev) => prev.map((v) => (v._id === r.data._id ? r.data : v)));
-      } else {
-        load();
-      }
-    } catch (e) {
-      toast(e.message, 'error');
-    } finally {
-      setChecking((c) => ({ ...c, [vm._id]: false }));
-    }
-  };
-
-  const checkAll = async () => {
-    try {
-      await api.post('/vms/check-all', {});
-      toast('Status check started for all VMs', 'info');
-    } catch (e) {
-      toast(e.message, 'error');
-    }
+  const lastSeen = (vm) => {
+    const d = vm.lastSeenAt || vm.lastCheck;
+    return d ? new Date(d).toLocaleString() : '—';
   };
 
   return (
     <div className="page">
       <div className="toolbar">
-        <span className="page-title">Agent Inventory</span>
-        <select className="input" value={connFilter} onChange={(e) => setConnFilter(e.target.value)} style={{ width: 140 }}>
-          <option value="">All connectivity</option>
+        <span className="page-title">Endpoints</span>
+        <select className="input toolbar-select" value={connFilter} onChange={(e) => setConnFilter(e.target.value)}>
+          <option value="">All health</option>
           <option value="online">Online</option>
           <option value="offline">Offline</option>
           <option value="excluded">Excluded</option>
         </select>
-        <select className="input" value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)} style={{ width: 130 }}>
-          <option value="">All agents</option>
-          <option value="active">Active</option>
-          <option value="removed">Removed</option>
-        </select>
         {selected.length > 0 && (
-          <button className="btn btn-danger btn-sm" onClick={async () => {
-            const activeIds = selected.filter((id) => {
-              const vm = vms.find((v) => v._id === id);
-              return vm && !isRemoved(vm);
-            });
-            if (!activeIds.length) {
-              toast('Removed agents cannot be deleted', 'error');
-              return;
-            }
-            if (!confirm(`Delete ${activeIds.length} VM(s) and their jobs?`)) return;
-            const r = await api.post('/vms/bulk-delete', { ids: activeIds });
-            toast(`Deleted ${r.deleted} VM(s), ${r.deletedJobs} job(s)`, 'success');
-            setSelected([]);
-            load();
-          }}>
-            <Trash2 size={14} /> Delete ({selected.length})
-          </button>
+          <>
+            <select className="input toolbar-select" value={bulkPowerAction} onChange={(e) => setBulkPowerAction(e.target.value)}>
+              <option value="">Bulk power action…</option>
+              <option value="power_off_graceful">Power Off (graceful)</option>
+              <option value="power_off_force">Power Off (force)</option>
+              <option value="restart_graceful">Restart (graceful)</option>
+              <option value="graceful_shutdown">Graceful Shutdown</option>
+            </select>
+            <input className="input" type="password" placeholder="RDSROOT password" value={bulkPassword} onChange={(e) => setBulkPassword(e.target.value)} style={{ maxWidth: 160 }} />
+            <button className="btn btn-outline btn-sm" disabled={!bulkPowerAction || !bulkPassword} onClick={bulkPower}>
+              <Power size={14} /> Apply ({selected.length})
+            </button>
+          </>
         )}
         <div className="toolbar-right">
           <input ref={fileRef} type="file" accept=".txt,.xlsx,.xls" hidden onChange={importFile} />
           <button className="btn btn-outline" onClick={() => setModal('new')}><Plus size={14} /> Add</button>
           <button className="btn btn-outline" onClick={() => fileRef.current?.click()}><Upload size={14} /> Import</button>
-          <button className="btn btn-outline" onClick={checkAll}><Search size={14} /> Check All</button>
+          <button className="btn btn-outline" onClick={async () => { await api.post('/vms/check-all', {}); toast('Check started', 'info'); }}><Search size={14} /> Check All</button>
           <button className="btn btn-outline" onClick={load}><RefreshCw size={14} /> Refresh</button>
           <Link to="/jobs/new" className="btn btn-primary">New Job</Link>
         </div>
       </div>
 
       <div className="table-wrap">
-        <table className="agent-table">
+        <table className="agent-table endpoints-table">
           <thead>
             <tr>
               <th className="col-check">
@@ -398,80 +262,43 @@ export default function VmsPage() {
               </th>
               <th>Hostname</th>
               <th>IP</th>
-              <th>Agent Status</th>
-              <th>Connectivity</th>
-              <th>Authentication</th>
+              <th>OS</th>
+              <th>Health</th>
+              <th>Power</th>
+              <th>Local Users</th>
+              <th>Last Seen</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={7} className="empty"><Loader2 className="spin" size={18} /> Loading…</td></tr>
+              <tr><td colSpan={9} className="empty"><Loader2 className="spin" size={18} /> Loading…</td></tr>
             ) : vms.length === 0 ? (
-              <tr><td colSpan={7} className="empty">No VMs — add or import hosts, then run Check</td></tr>
-            ) : vms.map((vm) => {
-              const removed = isRemoved(vm);
-              const busy = checking[vm._id];
-              const auth = vm.authStatus || (
-                vm.status === 'online'
-                  ? 'allowed'
-                  : (vm.connectivityState === 'auth_failed' || vm.connectivityState === 'permission_denied' ? 'denied' : 'unknown')
-              );
-              const canUninstall = !removed && auth === 'allowed' && !uninstalling[vm._id];
-              return (
-                <tr
-                  key={vm._id}
-                  className={`data-row ${busy ? 'row-checking' : ''} ${openMenuId === vm._id ? 'row-menu-active' : ''}`}
-                  onClick={() => setOpenMenuId(vm._id)}
-                >
-                  <td className="col-check" onClick={(e) => e.stopPropagation()}>
-                    <input type="checkbox" checked={selected.includes(vm._id)} disabled={removed}
-                      onChange={() => setSelected((s) => s.includes(vm._id) ? s.filter((x) => x !== vm._id) : [...s, vm._id])} />
-                  </td>
-                  <td className="col-host">{vm.name}</td>
-                  <td className="col-ip mono">{displayIp(vm.ip)}</td>
-                  <td className="col-status"><AgentBadge vm={vm} /></td>
-                  <td className="col-status"><ConnBadge vm={vm} isChecking={busy} /></td>
-                  <td className="col-status"><AuthBadge vm={vm} /></td>
-                  <td className="col-actions" onClick={(e) => e.stopPropagation()}>
-                    <RowActionsMenu
-                      open={openMenuId === vm._id}
-                      onOpenChange={(v) => setOpenMenuId(v ? vm._id : null)}
-                      items={[
-                        {
-                          icon: busy ? <Loader2 className="spin" size={15} /> : <Activity size={15} />,
-                          label: busy ? 'Checking…' : 'Check',
-                          onClick: () => checkVm(vm),
-                          disabled: busy,
-                        },
-                        {
-                          icon: <Unplug size={15} />,
-                          label: uninstalling[vm._id]
-                            ? 'Uninstalling…'
-                            : (canUninstall ? 'Uninstall' : (removed ? 'Uninstall (Removed)' : 'Uninstall (Requires Allowed Auth)')),
-                          onClick: () => uninstallVm(vm),
-                          disabled: !canUninstall,
-                          danger: true,
-                        },
-                        {
-                          icon: <Pencil size={15} />,
-                          label: 'Edit',
-                          onClick: () => setModal(vm),
-                          disabled: removed,
-                        },
-                        {
-                          icon: <Trash2 size={15} />,
-                          label: 'Delete',
-                          onClick: () => deleteVm(vm),
-                          disabled: removed,
-                          danger: true,
-                        },
-                      ]}
-                    />
-                  </td>
-                </tr>
-              );
-            })}
+              <tr><td colSpan={9} className="empty">No endpoints — add or import hosts to get started</td></tr>
+            ) : vms.map((vm) => (
+              <tr
+                key={vm._id}
+                className={`data-row ${lightbox?._id === vm._id ? 'row-menu-active' : ''}`}
+                onClick={() => openLightbox(vm)}
+              >
+                <td className="col-check" onClick={(e) => e.stopPropagation()}>
+                  <input type="checkbox" checked={selected.includes(vm._id)} disabled={isRemoved(vm)}
+                    onChange={() => setSelected((s) => s.includes(vm._id) ? s.filter((x) => x !== vm._id) : [...s, vm._id])} />
+                </td>
+                <td className="col-host">{vm.name}</td>
+                <td className="col-ip mono">{displayIp(vm.ip)}</td>
+                <td>{vm.osVersion || vm.os || 'Windows'}</td>
+                <td className="col-status"><HealthBadge vm={vm} /></td>
+                <td className="col-status"><PowerBadge state={vm.powerState} /></td>
+                <td className="col-local-users" onClick={(e) => e.stopPropagation()}>
+                  <LocalUsersCell vm={vm} onOpen={openLightbox} />
+                </td>
+                <td className="col-date">{lastSeen(vm)}</td>
+                <td className="col-actions" onClick={(e) => e.stopPropagation()}>
+                  <button className="btn btn-outline btn-sm" onClick={() => openLightbox(vm)}>Open</button>
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
@@ -480,17 +307,17 @@ export default function VmsPage() {
         <VmModal
           vm={modal === 'new' ? null : modal}
           onClose={() => setModal(null)}
-          onSaved={(vm, isNew) => {
-            if (isNew && vm) {
-              setVms((prev) => {
-                if (prev.some((v) => v._id === vm._id)) return prev;
-                return [...prev, vm].sort((a, b) => a.name.localeCompare(b.name));
-              });
-            } else {
-              load();
-            }
-          }}
-          onChecking={(id) => setChecking((c) => ({ ...c, [id]: true }))}
+          onSaved={() => load()}
+          onChecking={() => {}}
+        />
+      )}
+
+      {lightbox && (
+        <EndpointLightbox
+          vm={lightbox}
+          initialTab={lightboxTab}
+          onClose={closeLightbox}
+          onVmUpdated={load}
         />
       )}
     </div>

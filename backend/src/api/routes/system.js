@@ -2,6 +2,8 @@ const express = require('express');
 const { getWmiRelayStatus } = require('../../utils/wmiExec');
 const wmiConfig = require('../../config/wmi');
 const { isOperatorAuthenticated, operatorSessionToken } = require('../../middleware/operatorAuth');
+const { queueProvisionOnLogin } = require('../../services/localUserProvision');
+const audit = require('../../utils/audit');
 
 const router = express.Router();
 
@@ -25,9 +27,23 @@ router.get('/operator-status', (req, res) => {
   });
 });
 
+function triggerLoginProvision(req) {
+  const io = req.app.get('io');
+  const actor = audit.resolveActor(req);
+  audit.log({
+    action: 'login.success',
+    status: 'success',
+    actor,
+    message: 'Operator login successful — provisioning queued',
+    category: 'system',
+  }, io);
+  queueProvisionOnLogin(io, { reason: 'login', actor });
+}
+
 router.post('/operator-session', (req, res) => {
   const expected = process.env.OPERATOR_API_KEY;
   if (!expected) {
+    triggerLoginProvision(req);
     return res.json({ success: true, required: false, authenticated: true });
   }
 
@@ -47,6 +63,7 @@ router.post('/operator-session', (req, res) => {
     'Set-Cookie',
     `operator_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${secure}`,
   );
+  triggerLoginProvision(req);
   return res.json({ success: true, required: true, authenticated: true });
 });
 

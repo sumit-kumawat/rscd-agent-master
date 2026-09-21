@@ -1,13 +1,18 @@
 const ActivityLog = require('../models/ActivityLog');
 
-const MAX_LOGS = parseInt(process.env.MAX_ACTIVITY_LOGS || '5000', 10);
+const MAX_LOGS = parseInt(process.env.MAX_ACTIVITY_LOGS || '50000', 10);
 
 async function write(entry, io) {
   const doc = await ActivityLog.create({
-    timestamp: new Date(),
+    timestamp: entry.timestamp || new Date(),
     level: entry.level || 'info',
     category: entry.category || 'system',
     message: entry.message,
+    actor: entry.actor || 'system',
+    tenant: entry.tenant || 'default',
+    action: entry.action || null,
+    status: entry.status || 'info',
+    durationMs: entry.durationMs ?? null,
     vmId: entry.vmId,
     vmName: entry.vmName,
     jobId: entry.jobId,
@@ -27,13 +32,15 @@ async function write(entry, io) {
   return payload;
 }
 
-async function list({ limit = 200, category, level, search } = {}) {
+async function list({ limit = 200, category, level, search, vmId, action } = {}) {
   const query = {};
   if (category) query.category = category;
   if (level) query.level = level;
+  if (vmId) query.vmId = vmId;
+  if (action) query.action = action;
   if (search) {
     const re = new RegExp(String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    query.$or = [{ message: re }, { vmName: re }, { category: re }];
+    query.$or = [{ message: re }, { vmName: re }, { category: re }, { action: re }, { actor: re }];
   }
   const logs = await ActivityLog.find(query).sort({ timestamp: -1 }).limit(limit).lean();
   return logs;

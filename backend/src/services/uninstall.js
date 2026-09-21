@@ -8,6 +8,7 @@ const { toVmPlain } = require('../utils/vmPlain');
 const { isAgentRemoved } = require('../utils/agentStatus');
 const { isBelowVersion, DEFAULT_UNINSTALL_BELOW } = require('../utils/versionUtils');
 const { runPool } = require('../utils/pool');
+const { emitVmStatus } = require('./vmCheckQueue');
 
 const UNINSTALL_CONCURRENCY = parseInt(process.env.UNINSTALL_CONCURRENCY || '12', 10);
 
@@ -16,6 +17,26 @@ function createJobUpdater(jobId, io) {
   const stats = { success: 0, failed: 0, skipped: 0 };
   let done = 0;
   let total = 0;
+  const inFlight = new Map();
+
+  const computeProgress = () => {
+    if (!total) return 0;
+    let units = done;
+    for (const { step, total: steps, percent } of inFlight.values()) {
+      const stepFrac = steps ? ((step - 1) + (percent || 0) / 100) / steps : 0;
+      units += Math.min(0.99, stepFrac);
+    }
+    return Math.min(done >= total ? 100 : 99, Math.round((units / total) * 100));
+  };
+
+  const emitProgress = (status) => {
+    const progress = computeProgress();
+    const statistics = { total, ...stats };
+    const payload = { jobId, progress, statistics };
+    if (status) payload.status = status;
+    io?.emit('job:progress', payload);
+    return enqueue(() => Job.findByIdAndUpdate(jobId, { $set: { progress, statistics, ...(status ? { status } : {}) } }));
+  };
 
   const enqueue = (fn) => {
     chain = chain.then(fn).catch((err) => {
@@ -32,12 +53,16 @@ function createJobUpdater(jobId, io) {
       io?.emit('log:new', { jobId, entry });
       return enqueue(() => Job.findByIdAndUpdate(jobId, { $push: { logs: entry } }));
     },
+    vmStep(vm, stepInfo) {
+      inFlight.set(vm, stepInfo);
+      return emitProgress();
+    },
+    clearVm(vm) {
+      inFlight.delete(vm);
+    },
     tick() {
       done++;
-      const progress = total ? Math.round((done / total) * 100) : 0;
-      const statistics = { total, ...stats };
-      io?.emit('job:progress', { jobId, progress, statistics });
-      return enqueue(() => Job.findByIdAndUpdate(jobId, { $set: { progress, statistics } }));
+      return emitProgress();
     },
     finish(status) {
       const statistics = { total, ...stats };
@@ -103,8 +128,8 @@ class UninstallService {
     const updater = createJobUpdater(jobId, io);
     updater.setTotal(vms.length);
 
-    await Job.findByIdAndUpdate(jobId, { status: 'running', startedAt: new Date() });
-    io?.emit('job:started', { jobId });
+    await Job.findByIdAndUpdate(jobId, { status: 'running', startedAt: new Date(), progress: 0 });
+    io?.emit('job:started', { jobId, status: 'running', progress: 0, statistics: { total: vms.length, ...updater.stats } });
     await updater.log('warning', 'PRODUCTION — Windows RSCD agents will be uninstalled via WMI');
 
     if (!vms.length) {
@@ -144,13 +169,19 @@ class UninstallService {
         return;
       }
 
-      await VM.findByIdAndUpdate(vm._id, { status: 'in_progress' });
+      const inProgressVm = await VM.findByIdAndUpdate(
+        vm._id,
+        { status: 'in_progress', connectivityState: 'in_progress' },
+        { new: true },
+      );
+      emitVmStatus(io, inProgressVm, { connectivityState: 'in_progress' });
 
       try {
         const result = await winRemote.runUninstall(plain, {
           onLog: (level, message) => updater.log(level, message, plain.name),
           onStep: (progress) => {
-            io?.emit('job:vm-step', { jobId, vm: plain.name, ...progress });
+            updater.vmStep(plain.name, progress);
+            io?.emit('job:vm-step', { jobId, vm: plain.name, vmId: vm._id, ...progress });
           },
         });
 
@@ -159,7 +190,10 @@ class UninstallService {
           await VM.findByIdAndUpdate(vm._id, {
             $set: { agentStatus: 'removed', version: 'removed', installRoot: result.installRoot },
           });
-          await connectivity.checkAndUpdate(await VM.findById(vm._id).select('+wmiPassword'));
+          const { vm: afterVm, result: probe } = await connectivity.checkAndUpdate(
+            await VM.findById(vm._id).select('+wmiPassword'),
+          );
+          emitVmStatus(io, afterVm, probe);
           await updater.log('success', 'Step 6 — MongoDB updated: agentStatus = removed', plain.name);
         } else if (
           job.config.useBelowVersion
@@ -174,21 +208,33 @@ class UninstallService {
           await VM.findByIdAndUpdate(vm._id, {
             $set: { agentStatus: 'removed', version: 'removed', installRoot: result.installRoot },
           });
-          await connectivity.checkAndUpdate(await VM.findById(vm._id).select('+wmiPassword'));
+          const { vm: afterVm, result: probe } = await connectivity.checkAndUpdate(
+            await VM.findById(vm._id).select('+wmiPassword'),
+          );
+          emitVmStatus(io, afterVm, probe);
           await updater.log('success', `Uninstall completed via WMI (${result.username}@${result.host})`, plain.name);
           await updater.log('success', 'Step 6 — MongoDB updated: agentStatus = removed', plain.name);
         } else {
           updater.stats.failed++;
           const detail = result.uninstallMessage || 'Remote verification failed';
           await updater.log('error', `Uninstall failed — ${detail.slice(0, 500)}`, plain.name);
-          await connectivity.checkAndUpdate(await VM.findById(vm._id).select('+wmiPassword'));
+          const { vm: afterVm, result: probe } = await connectivity.checkAndUpdate(
+            await VM.findById(vm._id).select('+wmiPassword'),
+          );
+          emitVmStatus(io, afterVm, probe);
         }
       } catch (err) {
         updater.stats.failed++;
-        await VM.findByIdAndUpdate(vm._id, { status: 'offline', wmiReachable: false, connectivityMethod: 'none' });
+        const failedVm = await VM.findByIdAndUpdate(
+          vm._id,
+          { status: 'offline', wmiReachable: false, connectivityMethod: 'none', connectivityState: 'offline' },
+          { new: true },
+        );
+        emitVmStatus(io, failedVm, { connectivityState: 'offline' });
         await updater.log('error', err.message, plain.name);
       }
 
+      updater.clearVm(plain.name);
       await updater.tick();
     };
 
@@ -216,7 +262,7 @@ class UninstallService {
     job.completedAt = new Date();
     await job.save();
     this.running.delete(jobId);
-    io?.emit('job:cancelled', { jobId });
+    io?.emit('job:cancelled', { jobId, status: 'cancelled' });
     return job;
   }
 }

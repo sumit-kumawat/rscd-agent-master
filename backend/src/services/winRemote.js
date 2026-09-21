@@ -10,6 +10,7 @@ const {
 const { toVmPlain } = require('../utils/vmPlain');
 const { isAgentRemoved } = require('../utils/agentStatus');
 const { DEFAULT_INSTALL_ROOT } = require('../utils/hosts');
+const { detectRscd } = require('./rscdDetection');
 
 const STEP_TIMEOUTS = wmiConfig.stepTimeouts;
 const POLL_INTERVAL_MS = wmiConfig.pollIntervalMs;
@@ -20,29 +21,6 @@ function sleep(ms) {
 
 const RSCD_ROOT = DEFAULT_INSTALL_ROOT;
 
-const SERVICE_DETECT_SCRIPT = [
-  '$ErrorActionPreference="SilentlyContinue"',
-  '$svc=Get-Service -Name RSCD -EA 0',
-  'if($svc){ Write-Output ("SERVICE:installed"); Write-Output ("SERVICE_STATUS:" + $svc.Status) }',
-  'else { Write-Output "SERVICE:not_installed" }',
-  'foreach($k in "HKLM:\\SOFTWARE\\BladeLogic\\RSCD Agent","HKLM:\\SOFTWARE\\WOW6432Node\\BladeLogic\\RSCD Agent"){',
-  '  $p=Get-ItemProperty $k -EA 0',
-  '  if($p.ProductCode){ Write-Output ("PRODUCTCODE:" + $p.ProductCode) }',
-  '}',
-  'foreach($u in "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall","HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall"){',
-  '  Get-ChildItem $u -EA 0 | ForEach-Object {',
-  '    $p=Get-ItemProperty $_.PSPath -EA 0',
-  '    if($p.DisplayName -match "RSCD|BladeLogic|TrueSight Server Automation|BMC BladeLogic"){',
-  '      Write-Output ("PROGRAMS:" + $p.DisplayName)',
-  '      if($_.PSChildName -match "^\\{"){ Write-Output ("PRODUCTCODE:" + $_.PSChildName) }',
-  '      elseif($p.UninstallString -match "\\{[0-9A-Fa-f-]{36}\\}"){',
-  '        Write-Output ("PRODUCTCODE:" + ([regex]::Match($p.UninstallString,"\\{[0-9A-Fa-f-]{36}\\}")).Value)',
-  '      }',
-  '    }',
-  '  }',
-  '}',
-].join('\n');
-
 function parseUninstallOutput(stdout) {
   const text = String(stdout || '');
   if (/PARTIAL:/i.test(text)) {
@@ -52,28 +30,6 @@ function parseUninstallOutput(stdout) {
     return { success: true, partial: false, message: text };
   }
   return { success: false, partial: false, message: text || 'Verification failed' };
-}
-
-function parseServiceDetect(stdout) {
-  const result = {
-    serviceInstalled: false,
-    serviceStatus: 'NotFound',
-    productCodes: [],
-    programs: [],
-  };
-  for (const line of String(stdout || '').split(/\r?\n/)) {
-    const t = line.trim();
-    if (t === 'SERVICE:installed') result.serviceInstalled = true;
-    else if (t.startsWith('SERVICE_STATUS:')) result.serviceStatus = t.slice(15).trim();
-    else if (t === 'SERVICE:not_installed') result.serviceInstalled = false;
-    else if (t.startsWith('PRODUCTCODE:')) {
-      const code = t.slice(12).trim();
-      if (/^\{[0-9A-Fa-f-]{36}\}$/.test(code) && !result.productCodes.includes(code)) {
-        result.productCodes.push(code);
-      }
-    } else if (t.startsWith('PROGRAMS:')) result.programs.push(t.slice(9).trim());
-  }
-  return result;
 }
 
 function getManualUninstallSteps(installRoot) {
@@ -112,7 +68,7 @@ class WinRemoteService {
     );
   }
 
-  async _wmiPs(session, script, timeoutMs = STEP_TIMEOUTS.detect) {
+  async _wmiPs(session, script, timeoutMs = STEP_TIMEOUTS.cmd) {
     return runWmiPowershell(
       session.host,
       session.username,
@@ -121,25 +77,6 @@ class WinRemoteService {
       session.domain || null,
       timeoutMs,
     );
-  }
-
-  async _withRetry(label, fn, onLog, retries = 1) {
-    let lastErr;
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        return await fn();
-      } catch (err) {
-        lastErr = err;
-        const retryable = /timeout|timed out|sharing violation/i.test(err.message || '');
-        if (attempt < retries && retryable) {
-          onLog(`${label} timed out — retrying (${attempt + 1}/${retries})`, 'warning');
-          await sleep(3000);
-        } else {
-          throw err;
-        }
-      }
-    }
-    throw lastErr;
   }
 
   async _pollMsiRemoval(session, code, onLog, timeoutMs = STEP_TIMEOUTS.msi) {
@@ -187,15 +124,14 @@ class WinRemoteService {
     };
   }
 
-  /** Step 1 — Detect RSCD service and Programs & Features entries. */
+  /** Step 1 — Parallel RSCD detection (service, registry, paths). */
   async _detectServiceState(session, onLog) {
-    onLog('Step 1 — Detecting RSCD service and Programs & Features entries…');
-    const r = await this._withRetry(
-      'Detection',
-      () => this._wmiPs(session, SERVICE_DETECT_SCRIPT, STEP_TIMEOUTS.detect),
-      onLog,
-    );
-    const state = parseServiceDetect(r.stdout);
+    onLog('Step 1 — Detecting RSCD (parallel sub-queries)…');
+    const state = await detectRscd(session, onLog, {
+      stepTimeoutMs: STEP_TIMEOUTS.detect,
+      queryTimeoutMs: wmiConfig.queryTimeoutMs,
+      passwords: [session.password],
+    });
 
     if (state.serviceInstalled) {
       onLog(`RSCD service found — status: ${state.serviceStatus}`, 'info');
@@ -207,13 +143,29 @@ class WinRemoteService {
       state.programs.forEach((p) => onLog(`Programs & Features entry found: ${p}`, 'info'));
     }
 
+    if (state.installPaths?.length) {
+      state.installPaths.forEach((p) => onLog(`Installation path found: ${p}`, 'info'));
+    }
+
     if (state.productCodes.length) {
       onLog(`MSI product code(s): ${state.productCodes.join(', ')}`, 'info');
     } else {
       onLog('No MSI product code found in registry', 'warning');
     }
 
-    return state;
+    if (state.partial) {
+      onLog(`Detection partial — some sub-queries failed: ${state.errors.join('; ')}`, 'warning');
+    }
+    if (state.detectionFailed) {
+      onLog('Detection failed — manual review required; continuing with available findings', 'warning');
+    }
+
+    return {
+      serviceInstalled: state.serviceInstalled,
+      serviceStatus: state.serviceStatus,
+      productCodes: state.productCodes,
+      programs: state.programs,
+    };
   }
 
   /** Step 2 — Stop service and processes if running. */
@@ -305,11 +257,7 @@ class WinRemoteService {
       '  }',
       '}',
     ].join('\n');
-    await this._withRetry(
-      'Registry cleanup',
-      () => this._wmiPs(session, script, STEP_TIMEOUTS.registry),
-      onLog,
-    );
+    await this._wmiPs(session, script, STEP_TIMEOUTS.registry);
     onLog('Registry cleanup completed', 'success');
   }
 

@@ -16,8 +16,34 @@ const { normalizeIdentity } = require('../../utils/wmiCredentials');
 
 const io = (req) => req.app.get('io');
 
+const endpointDetail = require('./endpointDetail');
+const audit = require('../../utils/audit');
+
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+router.post('/bulk-power', requireOperator, async (req, res) => {
+  const { ids, action, password } = req.body;
+  if (!Array.isArray(ids) || !ids.length || !action) {
+    return res.status(400).json({ success: false, message: 'ids and action required' });
+  }
+  const endpointOps = require('../../services/endpointOps');
+  const actor = audit.resolveActor(req);
+  const results = [];
+  for (const id of ids) {
+    const vm = await VM.findById(id).lean();
+    if (!vm) { results.push({ id, ok: false, error: 'not found' }); continue; }
+    try {
+      await endpointOps.executePower(vm, action, password, io(req), actor);
+      results.push({ id, ok: true, vm: vm.name });
+    } catch (err) {
+      results.push({ id, ok: false, vm: vm.name, error: audit.maskSecrets(err.message) });
+    }
+  }
+  res.json({ success: true, results });
+});
+
+router.use('/:id', endpointDetail);
 
 router.get('/', async (req, res) => {
   const { search, status, agentStatus } = req.query;
@@ -126,8 +152,9 @@ router.post('/', async (req, res) => {
     agentStatus: 'active',
     connectivityMethod: 'none',
   });
-  await activityLog.write({
-    category: 'vm', level: 'success', message: `VM added: ${vm.name}`, vmId: vm._id, vmName: vm.name,
+  await audit.log({
+    action: 'vm.create', status: 'success', actor: audit.resolveActor(req),
+    vmId: vm._id, vmName: vm.name, message: `VM added: ${vm.name}`,
   }, io(req));
   queueVmCheck(vm._id, io(req));
   res.status(201).json({ success: true, data: vm, checkQueued: true });
@@ -186,8 +213,9 @@ router.put('/:id', async (req, res) => {
   const agentProbe = require('../../services/agentProbe');
   agentProbe.clearSession(vm);
   queueVmCheck(vm._id, io(req));
-  await activityLog.write({
-    category: 'vm', level: 'info', message: `VM updated: ${vm.name}`, vmId: vm._id, vmName: vm.name,
+  await audit.log({
+    action: 'vm.update', status: 'success', actor: audit.resolveActor(req),
+    vmId: vm._id, vmName: vm.name, message: `VM updated: ${vm.name}`,
   }, io(req));
   res.json({ success: true, data: vm, checkQueued: true });
 });

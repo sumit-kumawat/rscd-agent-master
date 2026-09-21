@@ -6,7 +6,7 @@ import { onSocket } from './socket';
 import { useToast } from './components/Toast';
 import { useSearch } from './context/SearchContext';
 import { useRefresh } from './context/RefreshContext';
-import RowActionsMenu from './components/RowActionsMenu';
+import { patchJobList } from './utils/jobSockets';
 
 function Badge({ status }) {
   const m = { completed: 'badge-online', failed: 'badge-offline', running: 'badge-progress', pending: 'badge-excluded', cancelled: 'badge-excluded' };
@@ -16,7 +16,6 @@ function Badge({ status }) {
 export default function JobsPage() {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [openMenuId, setOpenMenuId] = useState(null);
   const { search } = useSearch();
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const { tick } = useRefresh();
@@ -35,15 +34,25 @@ export default function JobsPage() {
   };
 
   useEffect(() => { load(); }, [debouncedSearch, tick]);
-  useEffect(() => onSocket('job:completed', load), []);
-  useEffect(() => onSocket('job:progress', load), []);
+
+  useEffect(() => {
+    const patch = (data) => setJobs((prev) => patchJobList(prev, data));
+    const off1 = onSocket('job:progress', patch);
+    const off2 = onSocket('job:started', patch);
+    const off3 = onSocket('job:completed', (data) => {
+      patch({ ...data, status: data.job?.status || 'completed', progress: 100 });
+      load();
+    });
+    const off4 = onSocket('job:cancelled', (data) => patch({ ...data, status: 'cancelled' }));
+    return () => { off1(); off2(); off3(); off4(); };
+  }, []);
 
   const cancelJob = async (job) => {
     if (!confirm(`Cancel job "${job.name}"?`)) return;
     try {
       await api.post(`/jobs/${job._id}/cancel`, {});
+      setJobs((prev) => patchJobList(prev, { jobId: job._id, status: 'cancelled' }));
       toast('Job cancelled', 'info');
-      load();
     } catch (e) {
       toast(e.message, 'error');
     }
@@ -77,20 +86,27 @@ export default function JobsPage() {
               <tr><td colSpan={6} className="empty">No jobs yet</td></tr>
             ) : jobs.map((j) => {
               const running = ['pending', 'running'].includes(j.status);
+              const progress = j.progress || 0;
               return (
                 <tr
                   key={j._id}
-                  className={`data-row ${openMenuId === j._id ? 'row-menu-active' : ''}`}
-                  onClick={() => setOpenMenuId(j._id)}
+                  className={`data-row ${running ? 'row-running' : ''}`}
+                  onClick={() => nav(`/jobs/${j._id}`)}
                 >
                   <td className="col-host">{j.name}</td>
-                  <td className="col-status"><Badge status={j.status} /></td>
+                  <td className="col-status">
+                    <Badge status={j.status} />
+                    {running && <Loader2 className="spin row-running-icon" size={12} />}
+                  </td>
                   <td>
                     <div className="progress-inline">
                       <div className="progress-track">
-                        <div className="progress-fill" style={{ width: `${j.progress || 0}%` }} />
+                        <div
+                          className={`progress-fill ${running ? 'progress-fill-live' : ''}`}
+                          style={{ width: `${progress}%` }}
+                        />
                       </div>
-                      <span className="progress-label">{j.progress || 0}%</span>
+                      <span className="progress-label">{progress}%</span>
                     </div>
                   </td>
                   <td className="col-results">
@@ -98,24 +114,8 @@ export default function JobsPage() {
                   </td>
                   <td className="col-date">{new Date(j.createdAt).toLocaleString()}</td>
                   <td className="col-actions" onClick={(e) => e.stopPropagation()}>
-                    <RowActionsMenu
-                      open={openMenuId === j._id}
-                      onOpenChange={(v) => setOpenMenuId(v ? j._id : null)}
-                      items={[
-                        {
-                          icon: <Eye size={15} />,
-                          label: 'View',
-                          onClick: () => nav(`/jobs/${j._id}`),
-                        },
-                        {
-                          icon: <XCircle size={15} />,
-                          label: 'Cancel',
-                          onClick: () => cancelJob(j),
-                          disabled: !running,
-                          danger: true,
-                        },
-                      ]}
-                    />
+                    <button className="btn btn-outline btn-sm" onClick={() => nav(`/jobs/${j._id}`)}><Eye size={14} /> View</button>
+                    {running && <button className="btn btn-danger btn-sm" onClick={() => cancelJob(j)}><XCircle size={14} /></button>}
                   </td>
                 </tr>
               );

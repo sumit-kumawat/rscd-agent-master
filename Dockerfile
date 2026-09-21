@@ -17,6 +17,7 @@ RUN chmod +x /usr/local/bin/wmiexec.py
 WORKDIR /app
 COPY backend/package*.json ./
 RUN npm ci --omit=dev
+COPY version.txt ./version.txt
 COPY backend/ ./
 COPY --from=frontend /fe/dist ./public
 

@@ -5,8 +5,8 @@ const router = express.Router();
 
 router.get('/', async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || '200', 10), 1000);
-  const { category, level, search } = req.query;
-  const logs = await activityLog.list({ limit, category, level, search });
+  const { category, level, search, vmId, action } = req.query;
+  const logs = await activityLog.list({ limit, category, level, search, vmId, action });
   res.json({ success: true, data: logs, total: logs.length });
 });
 
