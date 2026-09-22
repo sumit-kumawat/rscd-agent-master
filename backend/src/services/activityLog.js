@@ -3,10 +3,11 @@ const ActivityLog = require('../models/ActivityLog');
 const MAX_LOGS = parseInt(process.env.MAX_ACTIVITY_LOGS || '50000', 10);
 
 async function write(entry, io) {
+  const category = String(entry.category || 'system').slice(0, 64);
   const doc = await ActivityLog.create({
     timestamp: entry.timestamp || new Date(),
     level: entry.level || 'info',
-    category: entry.category || 'system',
+    category,
     message: entry.message,
     actor: entry.actor || 'system',
     tenant: entry.tenant || 'default',

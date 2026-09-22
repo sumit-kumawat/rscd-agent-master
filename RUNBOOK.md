@@ -12,7 +12,7 @@ docker compose ps
 curl -s http://localhost:8080/health | jq .
 ```
 
-Portal URL: **http://localhost:8080/#/dashboard** (hash routes — use `#/vms`, `#/jobs`, `#/logs`).
+Portal URL: **http://localhost:8080/dashboard** (also `/vms`, `/jobs`, `/logs`).
 
 ## Browser cache
 

@@ -6,7 +6,6 @@ const activityLogSchema = new mongoose.Schema(
     level: { type: String, enum: ['info', 'success', 'warning', 'error', 'debug'], default: 'info', index: true },
     category: {
       type: String,
-      enum: ['vm', 'job', 'monitor', 'import', 'system', 'provision', 'power', 'wmi', 'console', 'audit'],
       default: 'system',
       index: true,
     },

@@ -83,6 +83,9 @@ function categorizeAction(action) {
   if (a.startsWith('vm.')) return 'vm';
   if (a.startsWith('job.')) return 'job';
   if (a.startsWith('console.')) return 'console';
+  if (a.startsWith('sync.')) return 'sync';
+  if (a.startsWith('rdp.')) return 'console';
+  if (a.startsWith('deploy')) return 'job';
   return 'system';
 }
 

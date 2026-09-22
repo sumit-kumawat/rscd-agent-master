@@ -60,7 +60,14 @@ export function SyncProvider({ children }) {
     if (booted.current) return;
     booted.current = true;
 
-    api.post('/system/login', {}).catch(() => {});
+    try {
+      if (!sessionStorage.getItem('rscd.session.booted')) {
+        sessionStorage.setItem('rscd.session.booted', '1');
+        api.post('/system/login', {}).catch(() => {});
+      }
+    } catch {
+      api.post('/system/login', {}).catch(() => {});
+    }
 
     api.get('/sync/status').then((r) => {
       applyStatus(r.data);

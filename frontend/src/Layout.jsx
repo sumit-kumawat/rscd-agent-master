@@ -1,14 +1,19 @@
-import { useState } from 'react';
-import { Outlet, useOutletContext } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Outlet, useLocation, useOutletContext } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import Sidebar from './components/ui/Sidebar';
 import DashboardHeader from './components/ui/DashboardHeader';
 import { useSync } from './context/SyncContext';
 
 export default function Layout() {
+  const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [filter, setFilter] = useState('');
   const { syncing, syncProgress } = useSync();
+
+  useEffect(() => {
+    document.querySelector('.portal-outlet')?.scrollTo?.(0, 0);
+  }, [location.pathname]);
 
   return (
     <div className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
@@ -30,7 +35,7 @@ export default function Layout() {
         </div>
         <main className="app-main dash-main">
           <div className="app-content dash-content portal-outlet">
-            <Outlet context={{ filter }} />
+            <Outlet key={location.pathname} context={{ filter }} />
           </div>
         </main>
       </div>
