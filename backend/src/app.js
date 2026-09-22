@@ -120,9 +120,21 @@ app.use('/api/packages', packagesRoutes);
 app.use('/api/deployments', deploymentsRoutes);
 
 const publicDir = path.join(__dirname, '../public');
-app.use(express.static(publicDir));
-app.get('*', (req, res, next) => {
+app.use('/assets', express.static(path.join(publicDir, 'assets'), {
+  maxAge: isProd ? '365d' : 0,
+  immutable: isProd,
+}));
+app.use(express.static(publicDir, {
+  maxAge: 0,
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('index.html')) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
+  },
+}));
+app.get(/^\/(?!api|socket\.io|assets|favicon\.svg|icons\.svg).*/, (req, res, next) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return next();
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(path.join(publicDir, 'index.html'), (err) => {
     if (err) res.status(404).json({ message: 'Not found' });
   });

@@ -67,7 +67,7 @@ export default function DashboardPage() {
   const liveStats = live?.stats;
 
   return (
-    <div className="dashboard-page dashboard-page-fixed">
+    <div className="page dashboard-page dashboard-page-fixed">
       <div className="dashboard-v2">
         <FleetTotals stats={stats} liveStats={liveStats} />
         <div className="dashboard-v2-five">

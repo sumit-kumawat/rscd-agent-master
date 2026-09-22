@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { LayoutDashboard, Server, Briefcase, ScrollText, ChevronLeft, ChevronRight } from 'lucide-react';
 import Logo from '../../Logo';
 
@@ -10,34 +10,38 @@ const navItems = [
   { to: '/logs', label: 'Audit Log', icon: ScrollText },
 ];
 
-export default function Sidebar({ collapsed, onToggle, onRefresh }) {
+function isNavActive(pathname, to, end) {
+  if (end) return pathname === to;
+  return pathname === to || pathname.startsWith(`${to}/`);
+}
+
+export default function Sidebar({ collapsed, onToggle }) {
   const location = useLocation();
   const [version, setVersion] = useState('');
+
   useEffect(() => {
     fetch('/health').then((r) => r.json()).then((r) => setVersion(r.version || '')).catch(() => {});
   }, []);
 
   return (
     <aside className={`dash-sidebar ${collapsed ? 'collapsed' : ''}`}>
-      <button type="button" className="sidebar-brand sidebar-brand-logo-only" onClick={onRefresh} title="Refresh data">
+      <Link to="/dashboard" className="sidebar-brand sidebar-brand-logo-only" title="Dashboard">
         <Logo height={collapsed ? 26 : 32} />
-      </button>
+      </Link>
       <nav className="sidebar-nav" aria-label="Main navigation">
         {navItems.map(({ to, label, icon: Icon, end }) => {
-          const active = end
-            ? location.pathname === to
-            : location.pathname === to || location.pathname.startsWith(`${to}/`);
+          const active = isNavActive(location.pathname, to, end);
           return (
-            <NavLink
+            <Link
               key={to}
               to={to}
-              end={end}
               className={`sidebar-link${active ? ' active' : ''}`}
+              aria-current={active ? 'page' : undefined}
               title={collapsed ? label : undefined}
             >
               <Icon size={20} strokeWidth={1.5} />
               {!collapsed && <span>{label}</span>}
-            </NavLink>
+            </Link>
           );
         })}
       </nav>

@@ -65,12 +65,12 @@ export function SyncProvider({ children }) {
     api.get('/sync/status').then((r) => {
       applyStatus(r.data);
       const s = r.data;
-      if (!s?.running) {
-        api.post('/sync/full', { reason: 'boot' }).catch(() => {});
-      } else {
-        setInitialSyncDone(false);
-      }
+      if (s?.running) setInitialSyncDone(false);
     }).catch(() => setInitialSyncDone(true));
+
+    setTimeout(() => {
+      api.post('/sync/full', { reason: 'boot' }).catch(() => {});
+    }, 1500);
 
     const poll = () => api.get('/sync/status')
       .then((r) => applyStatus(r.data))

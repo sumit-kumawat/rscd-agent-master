@@ -328,16 +328,36 @@ body.modal-open { overflow: hidden; }
 
 .app-content {
   width: 100%;
-  max-width: var(--content-max);
-  margin: 0 auto;
+  max-width: none;
+  margin: 0;
   padding: var(--space-page);
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   -webkit-overflow-scrolling: touch;
+}
+
+.portal-outlet {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.portal-outlet > * {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+a.sidebar-link {
+  text-decoration: none;
+  color: inherit;
 }
 
 .page {
