@@ -1,14 +1,13 @@
 const path = require('path');
 const { runWmiPowershell } = require('../utils/wmiExec');
-const { resolveRemoteCredential } = require('../utils/remoteCredential');
+const agentProbe = require('./agentProbe');
+const { vmPlain } = require('../utils/remoteCredential');
 const registrySoftware = require('./registrySoftware');
 const deployConfig = require('../config/deployConfig');
 const packageStore = require('./packageStore');
 
-function sessionFromVm(vm) {
-  const cred = resolveRemoteCredential(vm);
-  const host = vm.fqdn || vm.name || vm.ip;
-  return { host, username: cred.username, password: cred.password, domain: cred.domain || null };
+async function sessionFromVm(vm) {
+  return agentProbe.connectWmi(vmPlain(vm));
 }
 
 async function wmiPs(session, script, timeoutMs) {
@@ -109,7 +108,7 @@ async function cleanupStaging(session, jobId) {
 
 async function installOnEndpoint(vm, jobId, pkgDoc, options, hooks) {
   const { onLog = () => {}, onStatus = () => {} } = hooks;
-  const session = sessionFromVm(vm);
+  const session = await sessionFromVm(vm);
   const buffer = packageStore.readPackageBytes(pkgDoc);
   const productName = options.productName || pkgDoc.name;
 

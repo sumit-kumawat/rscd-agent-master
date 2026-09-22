@@ -9,7 +9,7 @@ const {
 } = require('../utils/wmiExec');
 const { toVmPlain } = require('../utils/vmPlain');
 const { isAgentRemoved } = require('../utils/agentStatus');
-const { DEFAULT_INSTALL_ROOT } = require('../utils/hosts');
+const { DEFAULT_INSTALL_ROOT, getRscdCleanupRoots, resolveInstallRoot } = require('../config/rscdPaths');
 const { detectRscd } = require('./rscdDetection');
 
 const STEP_TIMEOUTS = wmiConfig.stepTimeouts;
@@ -20,12 +20,7 @@ function sleep(ms) {
 }
 
 const RSCD_ROOT = DEFAULT_INSTALL_ROOT;
-const DEFAULT_CLEANUP_ROOTS = [
-  RSCD_ROOT,
-  'C:\\Program Files\\BMC Software',
-  'C:\\Program Files (x86)\\BMC Software',
-  'C:\\ProgramData\\BMC',
-];
+const DEFAULT_CLEANUP_ROOTS = getRscdCleanupRoots();
 
 function parseUninstallOutput(stdout) {
   const text = String(stdout || '');
@@ -55,16 +50,10 @@ class WinRemoteService {
     return agentProbe.connectWmi(vm);
   }
 
-  /** Fixed Administrator credential for RSCD uninstall — not VM-stored creds. */
+  /** Platform credential chain (rdsroot → rdsmon → Administrator*). VM-stored creds win when set. */
   connectForUninstall(vm) {
-    const uninstallCred = require('../config/uninstallCredential');
-    const plain = toVmPlain(vm);
-    return this.connectWmi({
-      ...plain,
-      wmiUsername: uninstallCred.username,
-      wmiPassword: uninstallCred.password,
-      wmiDomain: uninstallCred.domain || '',
-    });
+    const { vmPlain } = require('../utils/remoteCredential');
+    return this.connectWmi(vmPlain(vm));
   }
 
   async _wmiCmd(session, cmdLine, options = {}) {
@@ -132,7 +121,7 @@ class WinRemoteService {
 
   async detectAgent(session, hintRoot) {
     const data = await agentProbe.probeOnSession(session);
-    const installRoot = data.installRoot || hintRoot || RSCD_ROOT;
+    const installRoot = resolveInstallRoot(data.installRoot, hintRoot);
     return {
       installed: data.installed,
       version: data.version,

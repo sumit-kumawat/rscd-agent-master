@@ -1,111 +1,164 @@
-import { useEffect, useRef, useState } from 'react';
-import { RefreshCw } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Download, RefreshCw } from 'lucide-react';
 import api from './api';
 import { onSocket } from './socket';
 import { useSearch } from './context/SearchContext';
 import { useRefresh } from './context/RefreshContext';
-import { useApiQuery } from './hooks/useApiQuery';
-import { ListSkeleton } from './components/ui/TabSkeletons';
+import { useLiveData } from './hooks/useLiveData';
 
-const levelClass = { error: 'log-msg-error', warning: 'log-msg-warning', success: 'log-msg-success' };
+const COLS = [
+  { key: 'timestamp', label: 'Timestamp', width: 160 },
+  { key: 'actor', label: 'Actor', width: 100 },
+  { key: 'action', label: 'Action', width: 140 },
+  { key: 'vmName', label: 'Endpoint', width: 120 },
+  { key: 'step', label: 'Step', width: 100 },
+  { key: 'status', label: 'Status', width: 90 },
+  { key: 'durationMs', label: 'Duration', width: 80 },
+  { key: 'message', label: 'Message', width: 320 },
+];
+
+function cellValue(log, key) {
+  if (key === 'timestamp') return log.timestamp ? new Date(log.timestamp).toLocaleString() : '';
+  if (key === 'action') return log.action || log.category || '';
+  if (key === 'step') return log.meta?.step || log.step || '';
+  if (key === 'durationMs') return log.durationMs != null ? `${log.durationMs}ms` : '';
+  return log[key] ?? '';
+}
+
+function rowToTsv(log) {
+  return COLS.map((c) => cellValue(log, c.key)).join('\t');
+}
+
+function exportCsv(logs) {
+  const header = COLS.map((c) => c.label).join(',');
+  const rows = logs.map((log) => COLS.map((c) => {
+    const v = String(cellValue(log, c.key)).replace(/"/g, '""');
+    return `"${v}"`;
+  }).join(','));
+  const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `audit-log-${Date.now()}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 
 export default function LogsPage() {
-  const [filter, setFilter] = useState('');
-  const topRef = useRef(null);
+  const [category, setCategory] = useState('');
+  const [sortKey, setSortKey] = useState('timestamp');
+  const [sortDir, setSortDir] = useState('desc');
+  const [selectedRow, setSelectedRow] = useState(null);
   const { search } = useSearch();
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const { tick } = useRefresh();
 
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    const t = setTimeout(() => setDebouncedSearch(search), 200);
     return () => clearTimeout(t);
   }, [search]);
 
-  const {
-    data: logs = [],
-    isLoading,
-    isError,
-    error,
-    reload,
-    silentReload,
-    patchData,
-  } = useApiQuery(
-    async ({ timeout, signal }) => {
+  const { data: logsRaw, reload, patchData } = useLiveData(
+    async () => {
       const params = new URLSearchParams();
-      if (filter) params.set('category', filter);
+      if (category) params.set('category', category);
       if (debouncedSearch) params.set('search', debouncedSearch);
-      params.set('limit', '500');
-      const q = params.toString() ? `?${params}` : '';
-      const r = await api.get(`/logs${q}`, { timeout, signal });
+      params.set('limit', '1000');
+      const r = await api.get(`/logs?${params}`);
       return r.data || [];
     },
-    [filter, debouncedSearch],
-    { initialData: [] },
+    [category, debouncedSearch, tick],
   );
 
-  useEffect(() => {
-    silentReload();
-  }, [tick, silentReload]);
+  const logs = Array.isArray(logsRaw) ? logsRaw : [];
 
   useEffect(() => onSocket('log:activity', (entry) => {
-    patchData((prev) => [entry, ...prev].slice(0, 500));
+    patchData((prev) => [entry, ...(prev || [])].slice(0, 1000));
   }), [patchData]);
 
-  useEffect(() => {
-    topRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs.length]);
+  const sorted = useMemo(() => {
+    const copy = [...logs];
+    copy.sort((a, b) => {
+      const av = cellValue(a, sortKey);
+      const bv = cellValue(b, sortKey);
+      if (av < bv) return sortDir === 'asc' ? -1 : 1;
+      if (av > bv) return sortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return copy;
+  }, [logs, sortKey, sortDir]);
 
-  const loading = isLoading && !logs.length;
+  const toggleSort = (key) => {
+    if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortKey(key); setSortDir('asc'); }
+  };
+
+  const copyRow = async (log) => {
+    try {
+      await navigator.clipboard.writeText(rowToTsv(log));
+    } catch { /* ignore */ }
+  };
 
   return (
     <div className="page">
       <div className="toolbar">
         <span className="page-title">Audit Log</span>
-        <select className="input toolbar-select" value={filter} onChange={(e) => setFilter(e.target.value)}>
-          <option value="">All</option>
+        <select className="input toolbar-select" value={category} onChange={(e) => setCategory(e.target.value)}>
+          <option value="">All categories</option>
           <option value="vm">VM</option>
           <option value="job">Job</option>
           <option value="power">Power</option>
           <option value="wmi">WMI</option>
-          <option value="provision">Provision</option>
-          <option value="console">Console</option>
-          <option value="monitor">Monitor</option>
+          <option value="import">Import</option>
           <option value="system">System</option>
         </select>
         <div className="toolbar-right">
-          <button className="btn btn-outline" onClick={() => reload(true)}><RefreshCw size={14} /> Refresh</button>
+          <button type="button" className="btn btn-outline" onClick={() => exportCsv(sorted)}>
+            <Download size={14} /> Export CSV
+          </button>
+          <button type="button" className="btn btn-outline" onClick={() => reload()}>
+            <RefreshCw size={14} /> Refresh
+          </button>
         </div>
       </div>
 
-      <div className="log-panel">
-        <div className="log-panel-header">
-          <span>Real-time audit events</span>
-          <span className="log-count">{logs.length} entries</span>
-        </div>
-        <div className="log-list">
-          <div ref={topRef} />
-          {loading ? (
-            <ListSkeleton rows={8} />
-          ) : isError ? (
-            <div className="empty">{error} — <button className="btn btn-outline btn-sm" onClick={() => reload(false)}>Retry</button></div>
-          ) : logs.length === 0 ? (
-            <div className="empty">No audit entries yet — actions performed in the portal will appear here</div>
-          ) : logs.map((log) => (
-            <div key={log._id || `${log.timestamp}-${log.message}`} className="log-row data-row audit-row">
-              <span className="log-time">{new Date(log.timestamp).toLocaleString()}</span>
-              <span className="log-cat">{log.action || log.category}</span>
-              <span className={levelClass[log.level] || ''}>
-                <span className="audit-meta">
-                  {log.actor && <span className="audit-tag">{log.actor}</span>}
-                  {log.status && <span className="audit-tag">{log.status}</span>}
-                  {log.durationMs != null && <span className="audit-tag">{log.durationMs}ms</span>}
-                  {log.vmName && <span className="audit-tag">{log.vmName}</span>}
-                </span>
-                {log.message}
-              </span>
-            </div>
-          ))}
-        </div>
+      <div className="spreadsheet-wrap">
+        <table className="spreadsheet-table">
+          <thead>
+            <tr>
+              {COLS.map((col) => (
+                <th
+                  key={col.key}
+                  style={{ minWidth: col.width }}
+                  className="spreadsheet-th"
+                  onClick={() => toggleSort(col.key)}
+                >
+                  {col.label}
+                  {sortKey === col.key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.length === 0 ? (
+              <tr><td colSpan={COLS.length} className="empty">No audit entries yet</td></tr>
+            ) : sorted.map((log) => (
+              <tr
+                key={log._id || `${log.timestamp}-${log.message}`}
+                className={`spreadsheet-row data-row${selectedRow === log._id ? ' spreadsheet-row-selected' : ''}`}
+                onClick={() => {
+                  setSelectedRow(log._id);
+                  copyRow(log);
+                }}
+              >
+                {COLS.map((col) => (
+                  <td key={col.key} className={col.key === 'timestamp' ? 'spreadsheet-sticky' : ''}>
+                    {cellValue(log, col.key)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

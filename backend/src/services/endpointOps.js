@@ -28,12 +28,9 @@ function opsSession(vm) {
 }
 
 async function connectOps(vm) {
-  const plain = { ...vm, wmiUsername: opsCred.username, wmiPassword: opsCred.password, wmiDomain: opsCred.domain };
-  try {
-    return await agentProbe.connectWmi(plain);
-  } catch {
-    return opsSession(vm);
-  }
+  const { vmPlain } = require('../utils/remoteCredential');
+  const plain = vmPlain(vm);
+  return agentProbe.connectWmi(plain);
 }
 
 async function wmiPs(session, script, timeoutMs = QUERY_TIMEOUT) {
@@ -168,7 +165,7 @@ async function fetchSoftware(vm) {
 
 async function fetchRscd(vm, onLog = () => {}) {
   const session = await connectOps(vm);
-  const state = await detectRscd(session, onLog, { passwords: [opsCred.password] });
+  const state = await detectRscd(session, onLog, { passwords: [session.password] });
   return {
     serviceInstalled: state.serviceInstalled,
     serviceStatus: state.serviceStatus,
@@ -257,7 +254,7 @@ function consoleInfo(vm) {
     protocol: 'rdp',
     url: host ? `rdp://full%20address=s:${host}` : null,
     instructions: host
-      ? `Open Remote Desktop Connection to ${host} using the RDSROOT account.`
+      ? `Open Remote Desktop Connection to ${host}. Try rdsroot, then rdsmon, then Administrator (Helix@dm1n or bmcAdm1n).`
       : 'No hostname available for console launch.',
   };
 }

@@ -32,7 +32,7 @@ router.get('/:id/programs', async (req, res) => {
   }
   try {
     const plain = { ...vm.toObject(), wmiPassword: decryptIfNeeded(vm.wmiPassword) };
-    const session = deployInstall.sessionFromVm(plain);
+    const session = await deployInstall.sessionFromVm(plain);
     const { programs, agents, capturedAt } = await registrySoftware.fetchInstalledPrograms(session);
     res.json({ success: true, data: { programs, agents, capturedAt, source: 'live' } });
   } catch (err) {

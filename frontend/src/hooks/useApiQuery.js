@@ -43,7 +43,9 @@ export function useApiQuery(fetcher, deps = [], options = {}) {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const hasData = dataRef.current !== undefined && dataRef.current !== null;
+    const cur = dataRef.current;
+    const hasData = cur !== undefined && cur !== null
+      && !(Array.isArray(cur) && cur.length === 0);
     if (!silent && !hasData) setStatus('loading');
     setError(null);
 

@@ -9,8 +9,10 @@ const RETRY_BACKOFF = wmiConfig.queryRetryBackoffMs || [2000, 5000, 10000];
 const QUERY_TIMEOUT = wmiConfig.queryTimeoutMs;
 const STEP_TIMEOUT = wmiConfig.stepTimeoutMs;
 
-const BMC_PF = 'C:\\Program Files\\BMC Software';
-const BMC_PF86 = 'C:\\Program Files (x86)\\BMC Software';
+const {
+  getRscdCandidateRoots,
+  powershellEmitExistingDirs,
+} = require('../config/rscdPaths');
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -105,8 +107,7 @@ function buildFallbackScript() {
     '    }',
     '  }',
     '}',
-    `if(Test-Path '${BMC_PF.replace(/\\/g, '\\\\')}'){ Write-Output "DIR:${BMC_PF}" }`,
-    `if(Test-Path '${BMC_PF86.replace(/\\/g, '\\\\')}'){ Write-Output "DIR:${BMC_PF86}" }`,
+    powershellEmitExistingDirs(getRscdCandidateRoots()),
   ].join('\n');
 }
 
@@ -210,19 +211,14 @@ async function detectRscd(session, onLog, options = {}) {
       },
     },
     {
-      name: 'path_programfiles',
+      name: 'path_known_roots',
       run: async () => {
-        const r = await wmiCmd(`if exist "${BMC_PF}\\" echo DIR_FOUND`);
-        const found = /DIR_FOUND/i.test(r.stdout || '');
-        return { installPaths: found ? [BMC_PF] : [] };
-      },
-    },
-    {
-      name: 'path_programfiles_x86',
-      run: async () => {
-        const r = await wmiCmd(`if exist "${BMC_PF86}\\" echo DIR_FOUND`);
-        const found = /DIR_FOUND/i.test(r.stdout || '');
-        return { installPaths: found ? [BMC_PF86] : [] };
+        const script = [
+          '$ErrorActionPreference="SilentlyContinue"',
+          powershellEmitExistingDirs(getRscdCandidateRoots()),
+        ].join('\n');
+        const r = await wmiPs(script);
+        return parseDetectOutput(r.stdout);
       },
     },
   ];

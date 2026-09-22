@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Outlet, useOutletContext } from 'react-router-dom';
+import { Outlet, useLocation, useOutletContext } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import Sidebar from './components/ui/Sidebar';
 import DashboardHeader from './components/ui/DashboardHeader';
@@ -7,6 +7,7 @@ import { useRefresh } from './context/RefreshContext';
 import { useSync } from './context/SyncContext';
 
 export default function Layout() {
+  const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [filter, setFilter] = useState('');
   const { refresh } = useRefresh();
@@ -32,7 +33,7 @@ export default function Layout() {
         </div>
         <main className="app-main dash-main">
           <div className="app-content dash-content">
-            <Outlet context={{ filter }} />
+            <Outlet key={location.pathname} context={{ filter }} />
           </div>
         </main>
       </div>

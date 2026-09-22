@@ -1,14 +1,9 @@
 const { runWmiPowershell, runWmiCmdAsync } = require('../utils/wmiExec');
-const { resolveRemoteCredential } = require('../utils/remoteCredential');
+const deployInstall = require('./deployInstall');
 const registrySoftware = require('./registrySoftware');
 const deployConfig = require('../config/deployConfig');
 const winRemote = require('./winRemote');
 
-function sessionFromVm(vm) {
-  const cred = resolveRemoteCredential(vm);
-  const host = vm.fqdn || vm.name || vm.ip;
-  return { host, username: cred.username, password: cred.password, domain: cred.domain || null };
-}
 
 async function wmiPs(session, script, timeoutMs) {
   const r = await runWmiPowershell(
@@ -64,7 +59,7 @@ async function uninstallProgramOnEndpoint(vm, jobId, spec, options, hooks) {
     };
   }
 
-  const session = sessionFromVm(vm);
+  const session = await deployInstall.sessionFromVm(vm);
   try {
     onStatus('connecting');
     const { programs } = await registrySoftware.fetchInstalledPrograms(session);

@@ -6,13 +6,13 @@ import {
 import api from '../api';
 import { useToast } from './Toast';
 import Portal from './Portal';
-import { useEnvironment } from '../context/EnvironmentContext';
 import { TableSkeleton } from './ui/TabSkeletons';
 
 const MSI_DEFAULT_ARGS = '/qn /norestart';
 
 export default function DeployWizard({ endpoints, onClose }) {
-  const { environment, isProd } = useEnvironment();
+  const environment = 'rnd';
+  const isProd = false;
   const toast = useToast();
   const nav = useNavigate();
   const [operation, setOperation] = useState('uninstall');

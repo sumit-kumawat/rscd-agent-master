@@ -1,5 +1,11 @@
 const logger = require('../utils/logger');
-const { isValidIpv4, DEFAULT_INSTALL_ROOT } = require('../utils/hosts');
+const { isValidIpv4 } = require('../utils/hosts');
+const {
+  DEFAULT_INSTALL_ROOT,
+  getRscdCandidateRoots,
+  powershellRootsArray,
+  resolveInstallRoot,
+} = require('../config/rscdPaths');
 const { resolveAllTargetsFast } = require('../utils/dnsCache');
 const {
   runWmiPowershell,
@@ -28,12 +34,7 @@ const wmiConfig = require('../config/wmi');
 const { toVmPlain } = require('../utils/vmPlain');
 
 const RSCD_ROOT = DEFAULT_INSTALL_ROOT;
-const CANDIDATE_ROOTS = [
-  RSCD_ROOT,
-  'C:\\Program Files\\BMC Software\\BladeLogic\\NSH',
-  'C:\\Program Files\\BMC Software\\BladeLogic',
-  'C:\\Program Files\\RSCD',
-];
+const CANDIDATE_ROOTS = getRscdCandidateRoots();
 
 const PROBE_SCRIPT = [
   '$ErrorActionPreference="SilentlyContinue"',
@@ -43,8 +44,8 @@ const PROBE_SCRIPT = [
   'Write-Output ("IP:" + $ip)',
   '$installed=$false; $version="unknown"; $installRoot=""',
   'if(Get-Service -Name RSCD -EA 0){ $installed=$true }',
-  `$roots=@('${CANDIDATE_ROOTS.map((r) => r.replace(/'/g, "''")).join("','")}')`,
-  'foreach($r in $roots){ if(Test-Path $r){ $installRoot=$r; $vf=Join-Path $r "VERSION"; if(Test-Path $vf){ $v=(Get-Content $vf -Raw -EA 0).Trim(); if($v){ $version=$v; $installed=$true } } elseif(-not $installed){ $installed=$true }; break } }',
+  `$roots=${powershellRootsArray(CANDIDATE_ROOTS)}`,
+  'foreach($r in $roots){ if(Test-Path $r){ if(-not $installRoot -or $r -match "RSCD$"){ $installRoot=$r }; $vf=Join-Path $r "VERSION"; if(Test-Path $vf){ $v=(Get-Content $vf -Raw -EA 0).Trim(); if($v){ $version=$v; $installed=$true } } elseif(-not $installed){ $installed=$true } } }',
   'foreach($k in "HKLM:\\SOFTWARE\\BladeLogic\\RSCD Agent","HKLM:\\SOFTWARE\\WOW6432Node\\BladeLogic\\RSCD Agent"){ $p=Get-ItemProperty $k -EA 0; if($p){ $installed=$true; if($p.InstallDir){ $installRoot=$p.InstallDir } } }',
   'if($installed){ Write-Output "AGENT:active"; Write-Output ("VERSION:" + $version); Write-Output ("INSTALLROOT:" + $installRoot) } else { Write-Output "AGENT:removed" }',
 ].join('\n');
@@ -64,6 +65,7 @@ function parseProbeOutput(stdout) {
     else if (t.startsWith('INSTALLROOT:')) result.installRoot = t.slice(12).trim();
   }
   if (result.ip && !isValidIpv4(result.ip)) result.ip = '';
+  result.installRoot = resolveInstallRoot(result.installRoot);
   return result;
 }
 
@@ -417,7 +419,9 @@ class AgentProbeService {
       ...data,
       installed: data.agentStatus === 'active',
       codes,
-      installRoots: data.installRoot ? [data.installRoot] : CANDIDATE_ROOTS,
+      installRoots: data.installRoot
+        ? [...new Set([data.installRoot, ...CANDIDATE_ROOTS])]
+        : CANDIDATE_ROOTS,
     };
   }
 

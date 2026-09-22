@@ -3,33 +3,23 @@ import {
 } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
-  RefreshCw, Plus, Upload, Search, Trash2, Power, Rocket, Monitor,
+  RefreshCw, Plus, Upload, Search, Trash2, Power, Rocket,
 } from 'lucide-react';
-import { launchRemoteDesktop } from './utils/launchRemoteDesktop';
-import { useEnvironment } from './context/EnvironmentContext';
 import DeployWizard from './components/DeployWizard';
 import api from './api';
 import { onSocket } from './socket';
 import { useToast } from './components/Toast';
 import { useSearch } from './context/SearchContext';
 import { useRefresh } from './context/RefreshContext';
-import EndpointLightbox, { PowerBadge, RscdAgentBadge } from './components/EndpointLightbox';
+import EndpointLightbox from './components/EndpointLightbox';
 import { useLayoutFilter } from './Layout';
-import { useApiQuery } from './hooks/useApiQuery';
+import { useLiveData } from './hooks/useLiveData';
 import BulkUninstallDialog from './components/BulkUninstallDialog';
 import Portal from './components/Portal';
-import { TableSkeleton } from './components/ui/TabSkeletons';
-
-const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
-
-function displayIp(ip) {
-  const v = String(ip || '').trim();
-  return IPV4.test(v) ? v : '—';
-}
-
-function isRemoved(vm) {
-  return vm.agentStatus === 'removed' || vm.version === 'removed';
-}
+import { useSync } from './context/SyncContext';
+import {
+  crowdStrikeActiveLabel, displayIp, displayOs, isRemoved, powerIsUp, rscdActiveLabel,
+} from './utils/assetsDisplay';
 
 function patchVmList(list, payload) {
   if (!payload?.vmId || !Array.isArray(list)) return list;
@@ -39,14 +29,14 @@ function patchVmList(list, payload) {
   next[idx] = {
     ...next[idx],
     status: payload.status ?? next[idx].status,
-    connectivity: payload.connectivity ?? next[idx].connectivity,
     connectivityState: payload.connectivityState ?? next[idx].connectivityState,
-    authStatus: payload.authStatus ?? next[idx].authStatus,
     agentStatus: payload.agentStatus ?? next[idx].agentStatus,
     ip: payload.ip ?? next[idx].ip,
     version: payload.version ?? next[idx].version,
-    lastCheck: payload.lastCheck ?? next[idx].lastCheck,
+    rscdStatus: payload.rscdStatus ?? next[idx].rscdStatus,
+    crowdStrikeStatus: payload.crowdStrikeStatus ?? next[idx].crowdStrikeStatus,
     powerState: payload.powerState ?? next[idx].powerState,
+    osVersion: payload.osVersion ?? next[idx].osVersion,
   };
   return next;
 }
@@ -56,7 +46,7 @@ const emptyForm = () => ({
   wmiDomain: '', wmiUsername: '', wmiPassword: '',
 });
 
-function VmModal({ vm, onClose, onSaved, onChecking }) {
+function VmModal({ vm, onClose, onSaved }) {
   const isNew = !vm;
   const toast = useToast();
   const [form, setForm] = useState(vm ? {
@@ -75,15 +65,13 @@ function VmModal({ vm, onClose, onSaved, onChecking }) {
       const payload = { ...form, ip: form.ip.trim() };
       if (!payload.wmiPassword) delete payload.wmiPassword;
       if (isNew) {
-        const r = await api.post('/vms', payload);
-        toast('VM added — checking status…', 'info');
-        onSaved(r.data, true);
-        if (r.data?._id) onChecking?.(r.data._id);
+        await api.post('/vms', payload);
+        toast('Endpoint added', 'success');
       } else {
         await api.put(`/vms/${vm._id}`, payload);
-        toast('VM updated', 'success');
-        onSaved();
+        toast('Endpoint updated', 'success');
       }
+      onSaved();
       onClose();
     } catch (e) {
       toast(e.message, 'error');
@@ -96,15 +84,11 @@ function VmModal({ vm, onClose, onSaved, onChecking }) {
     <Portal>
       <div className="modal-backdrop" onClick={onClose}>
         <div className="modal" onClick={(e) => e.stopPropagation()}>
-          <h3 style={{ margin: '0 0 14px', fontSize: 16 }}>{isNew ? 'Add VM' : 'Edit VM'}</h3>
-          <label className="field"><span>Hostname / FQDN</span>
+          <h3 style={{ margin: '0 0 14px', fontSize: 16 }}>{isNew ? 'Add endpoint' : 'Edit endpoint'}</h3>
+          <label className="field"><span>Hostname</span>
             <input className="input" value={form.name} onChange={(e) => set('name', e.target.value)} /></label>
-          <label className="field"><span>IP Address (optional)</span>
+          <label className="field"><span>IP (optional)</span>
             <input className="input" value={form.ip} onChange={(e) => set('ip', e.target.value)} /></label>
-          <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <input type="checkbox" checked={form.excluded} onChange={(e) => set('excluded', e.target.checked)} />
-            <span>Excluded from jobs</span>
-          </label>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button className="btn btn-outline" onClick={onClose}>Cancel</button>
             <button className="btn btn-primary" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save'}</button>
@@ -115,9 +99,19 @@ function VmModal({ vm, onClose, onSaved, onChecking }) {
   );
 }
 
-const VmRow = memo(function VmRow({
-  vm, selected, isActive, onOpen, onToggleSelect, onRdp,
-}) {
+function PowerDot({ up }) {
+  return (
+    <span
+      className={`power-dot ${up ? 'power-dot-up' : 'power-dot-down'}`}
+      title={up ? 'Up' : 'Down'}
+      aria-label={up ? 'Power up' : 'Power down'}
+    />
+  );
+}
+
+const AssetRow = memo(function AssetRow({ vm, selected, isActive, onOpen, onToggleSelect }) {
+  const rscd = rscdActiveLabel(vm);
+  const cs = crowdStrikeActiveLabel(vm);
   return (
     <tr
       className={`data-row ${isActive ? 'row-menu-active' : ''}`}
@@ -133,17 +127,10 @@ const VmRow = memo(function VmRow({
       </td>
       <td className="col-host">{vm.name}</td>
       <td className="col-ip mono">{displayIp(vm.ip)}</td>
-      <td className="col-env">{String(vm.environment || 'rnd').toUpperCase()}</td>
-      <td>{vm.osVersion || vm.os || 'Windows'}</td>
-      <td className="col-status"><RscdAgentBadge vm={vm} /></td>
-      <td className="col-mono">{vm.rscdVersion || vm.version || '—'}</td>
-      <td className="col-status">{vm.crowdStrikeStatus === 'installed' ? `v${vm.crowdStrikeVersion || '?'}` : '—'}</td>
-      <td className="col-status"><PowerBadge vm={vm} /></td>
-      <td className="col-actions" onClick={(e) => e.stopPropagation()}>
-        <button type="button" className="btn btn-outline btn-sm" title="Launch Remote Desktop" onClick={() => onRdp(vm)}>
-          <Monitor size={14} strokeWidth={1.5} />
-        </button>
-      </td>
+      <td>{displayOs(vm)}</td>
+      <td className={rscd === 'Active' ? 'cell-active' : 'cell-inactive'}>{rscd}</td>
+      <td className={cs === 'Active' ? 'cell-active' : 'cell-inactive'}>{cs}</td>
+      <td className="col-power"><PowerDot up={powerIsUp(vm)} /></td>
     </tr>
   );
 });
@@ -154,14 +141,14 @@ export default function VmsPage() {
   const headerFilter = useLayoutFilter();
   const { search } = useSearch();
   const { tick } = useRefresh();
-  const { environment } = useEnvironment();
-  const [deployOpen, setDeployOpen] = useState(false);
+  const { syncedTick } = useSync();
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [connFilter, setConnFilter] = useState('');
   const [selected, setSelected] = useState([]);
   const [modal, setModal] = useState(null);
   const [lightbox, setLightbox] = useState(null);
   const [lightboxTab, setLightboxTab] = useState('overview');
+  const [deployOpen, setDeployOpen] = useState(false);
   const [bulkPowerAction, setBulkPowerAction] = useState('');
   const [bulkPassword, setBulkPassword] = useState('');
   const [bulkUninstallOpen, setBulkUninstallOpen] = useState(false);
@@ -170,37 +157,27 @@ export default function VmsPage() {
   const toast = useToast();
 
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    const t = setTimeout(() => setDebouncedSearch(search), 200);
     return () => clearTimeout(t);
   }, [search]);
 
-  const {
-    data: vms = [],
-    isLoading,
-    isError,
-    error,
-    reload,
-    silentReload,
-    patchData,
-  } = useApiQuery(
-    async ({ timeout, signal }) => {
+  const { data: vms, reload, patchData } = useLiveData(
+    async () => {
       const params = new URLSearchParams();
       if (debouncedSearch) params.set('search', debouncedSearch);
       const statusFilter = connFilter || headerFilter;
       if (statusFilter) params.set('status', statusFilter);
-      if (environment) params.set('environment', environment);
-      const v = await api.get(`/vms?${params}`, { timeout, signal });
-      return v.data || [];
+      const r = await api.get(`/vms?${params}`);
+      return r.data || [];
     },
-    [debouncedSearch, connFilter, headerFilter, environment],
-    { initialData: [] },
+    [debouncedSearch, connFilter, headerFilter, tick, syncedTick],
   );
 
-  const loading = isLoading && !vms.length;
+  const list = Array.isArray(vms) ? vms : [];
 
   useEffect(() => {
-    silentReload();
-  }, [tick, silentReload]);
+    reload();
+  }, [tick, syncedTick, reload]);
 
   const openLightbox = useCallback((vm, tab = 'overview') => {
     setLightboxTab(tab);
@@ -209,10 +186,10 @@ export default function VmsPage() {
 
   useEffect(() => {
     const openId = location.state?.openVmId;
-    if (!openId || !vms.length) return;
-    const vm = vms.find((v) => String(v._id) === String(openId));
+    if (!openId || !list.length) return;
+    const vm = list.find((v) => String(v._id) === String(openId));
     if (vm) openLightbox(vm);
-  }, [location.state?.openVmId, vms, openLightbox]);
+  }, [location.state?.openVmId, list, openLightbox]);
 
   const closeLightbox = useCallback(() => {
     setLightbox(null);
@@ -220,19 +197,20 @@ export default function VmsPage() {
   }, []);
 
   useEffect(() => onSocket('vm:status', (payload) => {
-    patchData((list) => patchVmList(list, payload));
+    patchData((prev) => patchVmList(prev || [], payload));
     setLightbox((lb) => {
       if (!lb || String(lb._id) !== String(payload.vmId)) return lb;
       return { ...lb, ...payload, _id: lb._id };
     });
   }), [patchData]);
 
-  useEffect(() => onSocket('vms:deleted', () => reload(true)), [reload]);
+  useEffect(() => onSocket('vms:deleted', () => reload()), [reload]);
+  useEffect(() => onSocket('vms:imported', () => reload()), [reload]);
 
   const importFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const replace = confirm('Replace all VMs? OK=yes, Cancel=merge');
+    const replace = confirm('Replace all endpoints? OK = replace, Cancel = merge');
     try {
       let r;
       if (/\.txt$/i.test(file.name)) {
@@ -246,15 +224,15 @@ export default function VmsPage() {
         toast('Use .txt or .xlsx', 'error');
         return;
       }
-      toast(`Imported ${r.created} new`, 'info');
-      reload(true);
+      toast(`Import — ${r.created ?? 0} new, ${r.updated ?? 0} updated`, 'success');
+      reload();
     } catch (err) {
       toast(err.message, 'error');
     }
     e.target.value = '';
   };
 
-  const selectedVms = vms.filter((vm) => selected.includes(vm._id));
+  const selectedVms = list.filter((vm) => selected.includes(vm._id));
   const canBulkUninstall = selectedVms.some((vm) => !isRemoved(vm) && !vm.excluded);
 
   const bulkUninstall = async () => {
@@ -264,7 +242,7 @@ export default function VmsPage() {
     try {
       const r = await api.post('/endpoints/bulk-uninstall-rscd', { endpointIds: targets.map((v) => v._id) });
       const job = r.data || r.job;
-      toast(`Uninstall job started for ${targets.length} endpoint(s)`, 'info');
+      toast(`Uninstall job started (${targets.length})`, 'info');
       setBulkUninstallOpen(false);
       setSelected([]);
       if (job?._id) nav(`/jobs/${job._id}`);
@@ -281,8 +259,8 @@ export default function VmsPage() {
     try {
       const r = await api.post('/vms/bulk-power', { ids: selected, action: bulkPowerAction, password: bulkPassword });
       const ok = r.results?.filter((x) => x.ok).length || 0;
-      toast(`Power action sent to ${ok}/${selected.length} endpoints`, ok ? 'success' : 'warning');
-      silentReload();
+      toast(`Power sent to ${ok}/${selected.length}`, ok ? 'success' : 'warning');
+      reload();
     } catch (e) {
       toast(e.message, 'error');
     }
@@ -295,7 +273,7 @@ export default function VmsPage() {
   return (
     <div className="page">
       <div className="toolbar">
-        <span className="page-title">Endpoints</span>
+        <span className="page-title">Assets</span>
         <select className="input toolbar-select" value={connFilter} onChange={(e) => setConnFilter(e.target.value)}>
           <option value="">All health</option>
           <option value="online">Online</option>
@@ -305,7 +283,7 @@ export default function VmsPage() {
         {selected.length > 0 && (
           <>
             <select className="input toolbar-select" value={bulkPowerAction} onChange={(e) => setBulkPowerAction(e.target.value)}>
-              <option value="">Bulk power action…</option>
+              <option value="">Bulk power…</option>
               <option value="power_off_graceful">Power Off (graceful)</option>
               <option value="power_off_force">Power Off (force)</option>
               <option value="restart_graceful">Restart (graceful)</option>
@@ -316,15 +294,10 @@ export default function VmsPage() {
               <Power size={14} /> Apply ({selected.length})
             </button>
             <button type="button" className="btn btn-primary btn-sm" onClick={() => setDeployOpen(true)}>
-              <Rocket size={14} strokeWidth={1.5} /> Deploy wizard ({selected.length})
+              <Rocket size={14} strokeWidth={1.5} /> Deploy ({selected.length})
             </button>
-            <button
-              type="button"
-              className="btn btn-danger btn-sm"
-              disabled={!canBulkUninstall}
-              onClick={() => setBulkUninstallOpen(true)}
-            >
-              <Trash2 size={14} strokeWidth={1.5} /> Quick RSCD uninstall
+            <button type="button" className="btn btn-danger btn-sm" disabled={!canBulkUninstall} onClick={() => setBulkUninstallOpen(true)}>
+              <Trash2 size={14} strokeWidth={1.5} /> Uninstall RSCD
             </button>
           </>
         )}
@@ -333,46 +306,41 @@ export default function VmsPage() {
           <button className="btn btn-outline" onClick={() => setModal('new')}><Plus size={14} /> Add</button>
           <button className="btn btn-outline" onClick={() => fileRef.current?.click()}><Upload size={14} /> Import</button>
           <button className="btn btn-outline" onClick={async () => { await api.post('/vms/check-all', {}); toast('Check started', 'info'); }}><Search size={14} /> Check All</button>
-          <button className="btn btn-outline" onClick={() => reload(true)}><RefreshCw size={14} /> Refresh</button>
+          <button className="btn btn-outline" onClick={() => reload()}><RefreshCw size={14} /> Refresh</button>
           <Link to="/jobs/new" className="btn btn-primary">New Job</Link>
         </div>
       </div>
 
       <div className="table-wrap">
-        <table className="agent-table endpoints-table">
+        <table className="agent-table endpoints-table assets-table">
           <thead>
             <tr>
               <th className="col-check">
-                <input type="checkbox" checked={selected.length === vms.length && vms.length > 0}
-                  onChange={() => setSelected(selected.length === vms.length ? [] : vms.map((v) => v._id))} />
+                <input
+                  type="checkbox"
+                  checked={selected.length === list.length && list.length > 0}
+                  onChange={() => setSelected(selected.length === list.length ? [] : list.map((v) => v._id))}
+                />
               </th>
               <th>Hostname</th>
               <th>IP</th>
-              <th>Env</th>
-              <th>OS</th>
+              <th>Operating System</th>
               <th>RSCD</th>
-              <th>RSCD ver.</th>
               <th>CrowdStrike</th>
               <th>Power</th>
-              <th className="col-actions">RDP</th>
             </tr>
           </thead>
           <tbody>
-            {loading ? (
-              <tr><td colSpan={10}><TableSkeleton rows={6} cols={7} /></td></tr>
-            ) : isError ? (
-              <tr><td colSpan={10} className="empty">{error} — <button className="btn btn-outline btn-sm" onClick={() => reload(false)}>Retry</button></td></tr>
-            ) : vms.length === 0 ? (
-              <tr><td colSpan={10} className="empty">No endpoints — add or import hosts to get started</td></tr>
-            ) : vms.map((vm) => (
-              <VmRow
+            {list.length === 0 ? (
+              <tr><td colSpan={7} className="empty">No assets — import or add endpoints</td></tr>
+            ) : list.map((vm) => (
+              <AssetRow
                 key={vm._id}
                 vm={vm}
                 selected={selected.includes(vm._id)}
                 isActive={lightbox?._id === vm._id}
                 onOpen={openLightbox}
                 onToggleSelect={toggleSelect}
-                onRdp={(v) => launchRemoteDesktop(v._id, toast)}
               />
             ))}
           </tbody>
@@ -380,12 +348,7 @@ export default function VmsPage() {
       </div>
 
       {modal && (
-        <VmModal
-          vm={modal === 'new' ? null : modal}
-          onClose={() => setModal(null)}
-          onSaved={() => reload(true)}
-          onChecking={() => {}}
-        />
+        <VmModal vm={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={reload} />
       )}
 
       {bulkUninstallOpen && (
@@ -399,19 +362,14 @@ export default function VmsPage() {
         </Portal>
       )}
 
-      {deployOpen && (
-        <DeployWizard
-          endpoints={selectedVms}
-          onClose={() => setDeployOpen(false)}
-        />
-      )}
+      {deployOpen && <DeployWizard endpoints={selectedVms} onClose={() => setDeployOpen(false)} />}
 
       {lightbox && (
         <EndpointLightbox
           vm={lightbox}
           initialTab={lightboxTab}
           onClose={closeLightbox}
-          onVmUpdated={() => silentReload()}
+          onVmUpdated={reload}
         />
       )}
     </div>

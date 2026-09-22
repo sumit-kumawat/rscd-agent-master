@@ -38,7 +38,7 @@ async function syncOneEndpoint(vm, io, actor) {
       try {
         const base = fresh.toObject ? fresh.toObject() : fresh;
         const plain = { ...base, wmiPassword: decryptIfNeeded(base.wmiPassword) };
-        const session = deployInstall.sessionFromVm(plain);
+        const session = await deployInstall.sessionFromVm(plain);
         software = await registrySoftware.fetchInstalledPrograms(session);
       } catch {
         software = null;

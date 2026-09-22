@@ -7,7 +7,7 @@ const { decryptIfNeeded } = require('../utils/credentialCrypto');
 
 async function queryProgramsForEndpoint(vm) {
   const plain = { ...vm.toObject(), wmiPassword: decryptIfNeeded(vm.wmiPassword) };
-  const session = deployInstall.sessionFromVm(plain);
+  const session = await deployInstall.sessionFromVm(plain);
   try {
     const { programs } = await registrySoftware.fetchInstalledPrograms(session);
     return { endpointId: vm._id, name: vm.name, ip: vm.ip, ok: true, programs };

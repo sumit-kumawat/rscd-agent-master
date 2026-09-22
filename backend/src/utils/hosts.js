@@ -1,6 +1,6 @@
 const dns = require('dns').promises;
 
-const DEFAULT_INSTALL_ROOT = 'C:\\Program Files\\BMC Software\\BladeLogic\\RSCD';
+const { DEFAULT_INSTALL_ROOT } = require('../config/rscdPaths');
 const DEFAULT_DNS_SUFFIXES = ['corp.helixops.ai', 'bmc.com'];
 
 function isIp(host) {

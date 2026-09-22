@@ -31,6 +31,7 @@ function lineToVm(line) {
     agentStatus: 'active',
     status: 'offline',
     excluded: false,
+    environment: 'rnd',
   };
 }
 
@@ -93,6 +94,11 @@ async function saveVms(parsed, { replace = false, io = null } = {}) {
       message: `Import: ${created} new, ${updated} updated, ${skipped} skipped`,
       meta: { total: parsed.length, created, updated, skipped, replace },
     }, io);
+    if (io) {
+      io.emit('vms:imported', {
+        created, updated, skipped, total: parsed.length, replace,
+      });
+    }
     queueVmChecks([...newIds, ...updatedIds], io);
     return { total: parsed.length, created, updated, skipped, checkQueued: newIds.length + updatedIds.length };
   } finally {
@@ -125,6 +131,7 @@ function rowToVm(row, col) {
     agentStatus: 'active',
     status: 'offline',
     excluded: false,
+    environment: 'rnd',
   };
 }
 

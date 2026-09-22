@@ -1,25 +1,27 @@
 /**
- * Remote execution credentials: per-endpoint WMI creds first, else fixed Administrator / Helix@dm1n.
- * Never expose passwords outside server-side execution.
+ * Remote execution credentials: per-endpoint WMI creds first, else platform chain
+ * (rdsroot → rdsmon → Administrator with all configured passwords).
  */
-const uninstallCred = require('../config/uninstallCredential');
-const { resolveCredentialForVm } = require('./wmiCredentials');
+const { resolveCredentialForVm, resolveCredentialsForVm } = require('./wmiCredentials');
 const { decryptIfNeeded } = require('./credentialCrypto');
 
-function resolveRemoteCredential(vm) {
+function vmPlain(vm) {
   const plain = { ...vm };
   if (plain.wmiPassword) plain.wmiPassword = decryptIfNeeded(plain.wmiPassword);
+  return plain;
+}
 
+function resolveRemoteCredential(vm) {
+  const plain = vmPlain(vm);
   if (plain.wmiUsername && plain.wmiPassword) {
     return resolveCredentialForVm(plain);
   }
-
-  return {
-    username: uninstallCred.username,
-    password: uninstallCred.password,
-    domain: uninstallCred.domain || null,
-    label: uninstallCred.label || uninstallCred.username,
-  };
+  const chain = resolveCredentialsForVm(plain);
+  return chain[0];
 }
 
-module.exports = { resolveRemoteCredential };
+function resolveRemoteCredentials(vm) {
+  return resolveCredentialsForVm(vmPlain(vm));
+}
+
+module.exports = { resolveRemoteCredential, resolveRemoteCredentials, vmPlain };

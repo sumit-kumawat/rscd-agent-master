@@ -7,12 +7,20 @@ function sessionTtlMs() {
   return parseInt(process.env.RDP_SESSION_TTL_MS || '3600000', 10) || 3600000;
 }
 
-function buildGuacamoleUrl(host, vmName) {
+function guacamoleConnectionId(host) {
+  const connection = process.env.GUACAMOLE_CONNECTION_PREFIX || 'rdp-';
+  return `${connection}${host}`;
+}
+
+function buildGuacamoleUrl(host) {
   const base = (process.env.GUACAMOLE_PUBLIC_URL || '').replace(/\/$/, '');
   if (!base) return null;
-  const connection = process.env.GUACAMOLE_CONNECTION_PREFIX || 'rdp-';
-  const id = `${connection}${host}`;
+  const id = guacamoleConnectionId(host);
   return `${base}/#/client/${encodeURIComponent(id)}`;
+}
+
+function credentialOrderHint() {
+  return ['rdsroot', 'rdsmon', 'Administrator'];
 }
 
 async function launchSession(vm, actor, io) {
@@ -42,13 +50,14 @@ async function launchSession(vm, actor, io) {
     meta: { sessionId, host },
   }, io);
 
-  const guacUrl = buildGuacamoleUrl(host, vm.name);
+  const guacUrl = buildGuacamoleUrl(host);
   if (guacUrl) {
     return {
       mode: 'guacamole',
       url: guacUrl,
       sessionId,
       host,
+      credentialOrder: credentialOrderHint(),
       embedPath: `/api/vms/${vm._id}/remote-desktop/embed?session=${sessionId}`,
     };
   }
@@ -58,7 +67,8 @@ async function launchSession(vm, actor, io) {
     sessionId,
     host,
     url: `rdp://full%20address=s:${host}`,
-    message: 'Opening native Remote Desktop. For in-browser sessions without prompts, set GUACAMOLE_PUBLIC_URL.',
+    credentialOrder: credentialOrderHint(),
+    message: 'Opening native Remote Desktop. Configure Guacamole with platform credentials (rdsroot, rdsmon, Administrator) for passwordless browser RDP.',
   };
 }
 
@@ -88,4 +98,6 @@ module.exports = {
   launchSession,
   endSession,
   getSession,
+  guacamoleConnectionId,
+  buildGuacamoleUrl,
 };

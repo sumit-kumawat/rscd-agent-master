@@ -15,6 +15,7 @@ import { launchRemoteDesktop } from '../utils/launchRemoteDesktop';
 import { TabErrorBoundary } from './ErrorBoundary';
 import { GridSkeleton, TableSkeleton, ListSkeleton } from './ui/TabSkeletons';
 import Portal from './Portal';
+import RemoteDesktopModal from './RemoteDesktopModal';
 
 const TABS = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -331,6 +332,7 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
   const [uninstalling, setUninstalling] = useState(false);
   const [uninstallJobId, setUninstallJobId] = useState(null);
   const [uninstallProgress, setUninstallProgress] = useState(0);
+  const [rdpSession, setRdpSession] = useState(null);
   const dialogRef = useRef(null);
   const toast = useToast();
   const nav = useNavigate();
@@ -503,7 +505,16 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
           </div>
           <div className="lightbox-header-actions">
             {refreshing && <Loader2 className="spin" size={14} strokeWidth={1.5} aria-label="Refreshing" />}
-            <button type="button" className="btn btn-outline btn-sm" onClick={() => launchRemoteDesktop(vm._id, toast)}><Monitor size={14} strokeWidth={1.5} /> Remote Desktop</button>
+            <button
+              type="button"
+              className="btn btn-outline btn-sm"
+              onClick={() => launchRemoteDesktop(vm._id, toast, {
+                vmName: vm.name,
+                onEmbed: (session) => setRdpSession(session),
+              })}
+            >
+              <Monitor size={14} strokeWidth={1.5} /> Remote Desktop
+            </button>
             <button type="button" className="btn btn-outline btn-sm" onClick={() => tabQuery.reload(true)}><RefreshCw size={14} strokeWidth={1.5} /> Refresh</button>
             {uninstallJobId && (
               <button type="button" className="btn btn-outline btn-sm" onClick={() => nav(`/jobs/${uninstallJobId}`)}>View Job</button>
@@ -534,6 +545,9 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
         </div>
       </div>
     </div>
+    {rdpSession && (
+      <RemoteDesktopModal session={rdpSession} onClose={() => setRdpSession(null)} />
+    )}
     </Portal>
   );
 }

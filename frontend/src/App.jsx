@@ -4,7 +4,6 @@ import ErrorBoundary from './components/ErrorBoundary';
 import { SearchProvider } from './context/SearchContext';
 import { RefreshProvider } from './context/RefreshContext';
 import { SyncProvider } from './context/SyncContext';
-import { EnvironmentProvider } from './context/EnvironmentContext';
 import { SocketProvider } from './context/SocketContext';
 import Layout from './Layout';
 import DashboardPage from './DashboardPage';
@@ -22,7 +21,6 @@ export default function App() {
           <SearchProvider>
             <RefreshProvider>
               <SyncProvider>
-                <EnvironmentProvider>
                 <BrowserRouter>
                   <Routes>
                     <Route path="/" element={<Layout />}>
@@ -38,7 +36,6 @@ export default function App() {
                     <Route path="*" element={<Navigate to="/dashboard" replace />} />
                   </Routes>
                 </BrowserRouter>
-                </EnvironmentProvider>
               </SyncProvider>
             </RefreshProvider>
           </SearchProvider>

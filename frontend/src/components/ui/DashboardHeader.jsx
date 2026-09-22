@@ -1,15 +1,11 @@
-import { RefreshCw, User, CloudDownload } from 'lucide-react';
+import { RefreshCw, CloudDownload } from 'lucide-react';
 import GlobalSearch from '../GlobalSearch';
 import { useRefresh } from '../../context/RefreshContext';
 import { useSync } from '../../context/SyncContext';
-import { useSocketStatus } from '../../context/SocketContext';
-import { useEnvironment } from '../../context/EnvironmentContext';
 
 export default function DashboardHeader({ filter, onFilterChange }) {
-  const { refresh, autoRefresh, setAutoRefresh, intervalSec, setIntervalSec } = useRefresh();
+  const { refresh, intervalSec, setIntervalSec } = useRefresh();
   const { syncNow, syncing, lastSyncAt } = useSync();
-  const socket = useSocketStatus();
-  const { environment, setEnvironment, isProd } = useEnvironment();
 
   return (
     <header className="dash-header">
@@ -17,15 +13,6 @@ export default function DashboardHeader({ filter, onFilterChange }) {
         <GlobalSearch />
       </div>
       <div className="dash-header-controls">
-        <select
-          className={`dash-control${isProd ? ' dash-env-prod' : ''}`}
-          value={environment}
-          onChange={(e) => setEnvironment(e.target.value)}
-          aria-label="Deployment environment"
-        >
-          <option value="rnd">R&D / Build</option>
-          <option value="prod">PROD</option>
-        </select>
         <select
           className="dash-control"
           value={filter}
@@ -46,37 +33,21 @@ export default function DashboardHeader({ filter, onFilterChange }) {
           <CloudDownload size={16} strokeWidth={1.5} />
           <span>{syncing ? 'Syncing…' : 'Sync now'}</span>
         </button>
-        <label className="dash-control dash-auto-label">
-          <input
-            type="checkbox"
-            checked={autoRefresh}
-            onChange={(e) => setAutoRefresh(e.target.checked)}
-          />
-          Live {intervalSec}s
-        </label>
         <select
-          className="dash-control dash-control-sm"
+          className="dash-control"
           value={intervalSec}
           onChange={(e) => setIntervalSec(Number(e.target.value))}
-          aria-label="Live refresh interval"
+          aria-label="Auto refresh interval"
         >
-          <option value={15}>15s</option>
-          <option value={30}>30s</option>
-          <option value={60}>60s</option>
-          <option value={120}>120s</option>
+          <option value={15}>Auto 15s</option>
+          <option value={30}>Auto 30s</option>
+          <option value={60}>Auto 60s</option>
+          <option value={120}>Auto 120s</option>
         </select>
-        <button type="button" className="dash-control dash-btn" onClick={refresh} title="Refresh live metrics">
+        <button type="button" className="dash-control dash-btn" onClick={refresh} title="Refresh now">
           <RefreshCw size={16} strokeWidth={1.5} />
-          <span>Refresh metrics</span>
+          <span>Refresh</span>
         </button>
-        {!socket.connected && (
-          <span className="dash-live-badge" title={socket.lastError || 'Live updates unavailable'}>
-            Live off
-          </span>
-        )}
-        <div className="dash-avatar" title="Signed in">
-          <User size={16} strokeWidth={1.5} />
-        </div>
       </div>
     </header>
   );

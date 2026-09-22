@@ -5,27 +5,23 @@ import {
 const RefreshContext = createContext({
   tick: 0,
   refresh: () => {},
-  autoRefresh: true,
-  setAutoRefresh: () => {},
-  intervalSec: 30,
+  intervalSec: 15,
   setIntervalSec: () => {},
 });
 
 export function RefreshProvider({ children }) {
   const [tick, setTick] = useState(0);
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  const [intervalSec, setIntervalSec] = useState(30);
+  const [intervalSec, setIntervalSec] = useState(15);
   const refresh = useCallback(() => setTick((t) => t + 1), []);
 
   useEffect(() => {
-    if (!autoRefresh) return undefined;
     const t = setInterval(refresh, intervalSec * 1000);
     return () => clearInterval(t);
-  }, [autoRefresh, intervalSec, refresh]);
+  }, [intervalSec, refresh]);
 
   const value = useMemo(() => ({
-    tick, refresh, autoRefresh, setAutoRefresh, intervalSec, setIntervalSec,
-  }), [tick, refresh, autoRefresh, intervalSec]);
+    tick, refresh, intervalSec, setIntervalSec,
+  }), [tick, refresh, intervalSec]);
 
   return (
     <RefreshContext.Provider value={value}>

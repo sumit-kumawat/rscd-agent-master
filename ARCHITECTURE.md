@@ -1,15 +1,32 @@
 # RSCD Agent Master — Architecture
 
-**Version:** see `version.txt` (current: 2.0.10)
+**Version:** see `version.txt` (current: 2.0.15)
 
 ## Overview
 
 RSCD Agent Master is a Windows-only control portal for monitoring, auditing, and uninstalling BMC BladeLogic RSCD agents. Connectivity uses WMI (Impacket `wmiexec` or macOS host relay). React SPA + Node.js/Express + MongoDB + Socket.IO.
 
-## Data sync model (v2.0.4)
+## Navigation shell (v2.0.15)
+
+- React Router 7 with `Layout` + keyed `<Outlet key={location.pathname} />` so client-side navigation always mounts the target page (no hard refresh).
+- Sidebar uses explicit `useLocation()` active matching; logo-only brand in sidebar; minimal header (search, filter, sync, auto-refresh 15–120s, Refresh).
+
+## Assets page (v2.0.15)
+
+Table columns only: **Hostname, IP, Operating System, RSCD (Active/Inactive), CrowdStrike (Active/Inactive), Power (up/down dot)**. Row click opens endpoint lightbox (all tabs). Data from `GET /api/vms` without environment filter; live patches via `vm:status` and `vms:imported` sockets. Bulk selection uses a hidden checkbox column for jobs/deploy/power.
+
+## Dashboard layout (v2.0.15)
+
+Fixed viewport (no outer scroll): combined **Total / Online / Offline** card, **Connectivity Trends**, **Fleet Status** on top row; **Needs Attention**, **Job Activities**, **Fleet Progress** on second row. Internal card bodies scroll only.
+
+## Audit log UI (v2.0.15)
+
+Spreadsheet table: sortable columns, sticky header/first column, row click copies TSV, CSV export.
+
+## Data sync model (v2.0.4+)
 
 ```
-Portal load / Sync now / hourly job
+Portal load / Sync now / 3-hour job
   → endpointSync.runFullSync()
     → connectivity.checkAndUpdate (full WMI probe per host)
     → endpointOps fetch (overview, local users, power) when online
@@ -23,8 +40,8 @@ Live monitor (30s default)
 
 | Cadence | What updates | UI refresh |
 |---------|--------------|------------|
-| On load + manual **Sync now** + hourly job | Full WMI inventory, local users, hardware fields, synced dashboard widgets | `SyncContext.syncedTick` |
-| Auto-refresh interval (15–120s) | Health, power, running jobs, attention list, job bars | `RefreshContext.tick` |
+| On load + manual **Sync now** + every **3 hours** (`SYNC_INTERVAL_HOURS`) | Full WMI inventory, local users, hardware fields, synced dashboard widgets | `SyncContext.syncedTick` |
+| Auto-refresh interval (15–120s, default 15s) | Health, power, running jobs, attention list, job bars, assets table | `RefreshContext.tick` |
 | Socket events | `vm:status`, `job:*`, `log:activity` | Live widgets only |
 
 **API:**

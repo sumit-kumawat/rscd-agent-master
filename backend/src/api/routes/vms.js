@@ -43,20 +43,36 @@ router.post('/bulk-power', requireOperator, async (req, res) => {
   res.json({ success: true, results });
 });
 
+function environmentQuery(environment) {
+  if (environment === 'prod') return { environment: 'prod' };
+  if (environment === 'rnd') {
+    return {
+      $or: [
+        { environment: 'rnd' },
+        { environment: { $exists: false } },
+        { environment: null },
+      ],
+    };
+  }
+  return null;
+}
+
 router.get('/', async (req, res) => {
   const { search, status, agentStatus, environment } = req.query;
-  const query = { osType: 'windows' };
-  if (environment === 'rnd' || environment === 'prod') query.environment = environment;
+  const and = [{ osType: 'windows' }];
+  const envQ = environmentQuery(environment);
+  if (envQ) and.push(envQ);
   if (search) {
     const re = new RegExp(String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    query.$or = [{ name: re }, { ip: re }, { fqdn: re }];
+    and.push({ $or: [{ name: re }, { ip: re }, { fqdn: re }] });
   }
   if (agentStatus === 'active' || agentStatus === 'removed') {
-    query.agentStatus = agentStatus;
+    and.push({ agentStatus });
   }
-  if (status === 'excluded') query.excluded = true;
-  else if (status) { query.status = status; query.excluded = false; }
+  if (status === 'excluded') and.push({ excluded: true });
+  else if (status) and.push({ status, excluded: false });
 
+  const query = and.length === 1 ? and[0] : { $and: and };
   const vms = await VM.find(query).sort({ name: 1 }).limit(20000).lean();
   res.json({ success: true, data: vms, total: vms.length });
 });
@@ -376,7 +392,8 @@ router.get('/:id/remote-desktop/embed', (req, res) => {
   if (!session || !guac) {
     return res.status(404).send('Remote desktop session unavailable. Configure GUACAMOLE_PUBLIC_URL.');
   }
-  const src = `${guac}/#/client/${encodeURIComponent(session.host)}`;
+  const connId = remoteDesktop.guacamoleConnectionId(session.host);
+  const src = `${guac}/#/client/${encodeURIComponent(connId)}`;
   res.setHeader('Content-Security-Policy', `frame-src ${guac}`);
   res.type('html').send(
     `<!DOCTYPE html><html><head><title>RDP — ${session.vmName}</title></head>`

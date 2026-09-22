@@ -1,5 +1,19 @@
 # Architecture Decisions
 
+## RSCD install paths (v2.0.16)
+
+**Decision:** All probe, detection, and uninstall directory logic uses `backend/src/config/rscdPaths.js` — including `BladeLogic\RSCD`, versioned `BladeLogic*\NSH`, x86 NSH, and `PROGRA~1\BMCSOF~1\BLADEL~1\NSH`.
+
+**Rationale:** Fleet hosts install RSCD/NSH under multiple BMC directory layouts; a single `Program Files\...\RSCD` default missed active agents.
+
+## UI rebuild — navigation, assets, dashboard (v2.0.15)
+
+**Decision:** Fix client routing with keyed `Outlet`; rebuild Assets table and dashboard grid; spreadsheet audit log; strip header chrome (no profile, env badge, live checkbox).
+
+**Assets:** Same MongoDB `VM` collection as dashboard — list is not environment-filtered in the UI. RSCD/CrowdStrike derived from `rscdStatus` / `crowdStrikeStatus` and live agent fields.
+
+**Real-time:** `useLiveData` hook — no blocking skeletons; sockets patch lists; full sync every 3 hours via `endpointSync`.
+
 ## Structured audit logging (v2.0.2)
 
 **Decision:** All portal actions are recorded in the `ActivityLog` collection (audit log) with structured fields and streamed live to the UI.
@@ -129,3 +143,13 @@
 **Remote Desktop:** Credentials never sent to the browser. `POST /api/vms/:id/remote-desktop/launch` audits the session; in-browser RDP uses **Apache Guacamole** when `GUACAMOLE_PUBLIC_URL` is set; otherwise native `rdp://` handler (OS may prompt — Guacamole required for zero-prompt HTML5).
 
 **Loading:** Lightbox tabs use inventory `initialData` + silent WMI refresh; offline hosts skip WMI on the API.
+
+## Platform credential order (v2.0.13)
+
+**Decision:** All WMI, PowerShell remoting, deploy scripts, and RDP gateway setup use `platformCredentials.js` order:
+
+1. `rdsroot` (`RDSROOT_PASSWORD`, default `1Rs50U$D`)
+2. `rdsmon` (`RDSMON_PASSWORD`, default `D0N0harm`)
+3. `Administrator` — `ADMIN_PASSWORD` (default `Helix@dm1n`), then `ADMIN_PASSWORD_ALT` (`bmcAdm1n`), then `ADMIN_PASSWORD_ALT2` (`#D3Pl0y_M3nT$`)
+
+Per-endpoint WMI fields in MongoDB override the chain when username+password are stored. `agentProbe.connectWmi` tries each credential until one succeeds.

@@ -37,16 +37,13 @@ const FAILURE_CATEGORY_TO_KIND = {
   smb_failed: 'auth_failed',
 };
 
+const { getPlatformCredentialChain } = require('../config/platformCredentials');
+
 /**
- * Default BMC operations credentials — used when RSCD_OS_USERS is unset.
- * Order: rdsroot → rdsmon → Administrator (bmcAdm1n) → Administrator (#D3Pl0y_M3nT$)
+ * Default platform credentials — used when RSCD_OS_USERS is unset.
+ * Order: rdsroot → rdsmon → Administrator (Helix@dm1n, bmcAdm1n, #D3Pl0y_M3nT$)
  */
-const DEFAULT_CREDENTIALS = [
-  { username: 'rdsroot', password: process.env.RDSROOT_PASSWORD || '1Rs50U$D' },
-  { username: 'rdsmon', password: process.env.RDSMON_PASSWORD || 'D0N0harm' },
-  { username: 'Administrator', password: process.env.ADMIN_PASSWORD || 'bmcAdm1n' },
-  { username: 'Administrator', password: process.env.ADMIN_PASSWORD_ALT || '#D3Pl0y_M3nT$' },
-];
+const DEFAULT_CREDENTIALS = getPlatformCredentialChain();
 
 function parseCredentialPair(pair) {
   const i = pair.indexOf(':');
