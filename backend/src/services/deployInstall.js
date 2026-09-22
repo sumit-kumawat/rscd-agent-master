@@ -108,11 +108,11 @@ async function cleanupStaging(session, jobId) {
 
 async function installOnEndpoint(vm, jobId, pkgDoc, options, hooks) {
   const { onLog = () => {}, onStatus = () => {} } = hooks;
-  const session = await sessionFromVm(vm);
-  const buffer = packageStore.readPackageBytes(pkgDoc);
   const productName = options.productName || pkgDoc.name;
 
   try {
+    const session = await sessionFromVm(vm);
+    const buffer = packageStore.readPackageBytes(pkgDoc);
     onStatus('connecting');
     onLog('connecting', `Connecting to ${vm.name}`);
 

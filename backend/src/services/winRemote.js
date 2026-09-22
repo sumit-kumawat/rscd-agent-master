@@ -357,25 +357,32 @@ class WinRemoteService {
     const TOTAL_STEPS = 7;
 
     if (isAgentRemoved(plain)) {
-      onLog('Agent already marked Removed in database — skipping uninstall', 'info');
-      return {
-        success: true,
-        alreadyRemoved: true,
-        username: null,
-        host: null,
-        method: 'wmi',
-        version: 'removed',
-        installRoot: plain.installRoot || RSCD_ROOT,
-        uninstallMessage: 'OK:already_removed',
-        steps: [],
-      };
+      onLog('Database marks agent removed — running remote verification/cleanup anyway', 'info');
     }
 
     onPhase('detecting');
     onLog('Connecting via WMI (Administrator credential)…');
-    const session = await this.connectForUninstall(plain);
+    let session;
+    try {
+      session = await this.connectForUninstall(plain);
+    } catch (err) {
+      onLog(`WMI connection failed: ${err.message}`, 'error');
+      onPhase('failed', { result: 'connection_failed' });
+      return {
+        success: false,
+        error: err.message,
+        username: null,
+        host: plain.name,
+        method: 'wmi',
+        version: plain.version || 'unknown',
+        installRoot: plain.installRoot || RSCD_ROOT,
+        uninstallMessage: err.message,
+        steps: [],
+      };
+    }
     onLog(`WMI connection successful (${session.username}@${session.host})`, 'success');
 
+    try {
     onStep(1, TOTAL_STEPS, 'Detect agent');
     let agent;
     try {
@@ -474,6 +481,21 @@ class WinRemoteService {
       uninstallMessage: message,
       steps: msiResults,
     };
+    } catch (err) {
+      onLog(`Uninstall failed: ${err.message}`, 'error');
+      onPhase('failed', { result: 'error' });
+      return {
+        success: false,
+        error: err.message,
+        username: session?.username || null,
+        host: session?.host || plain.name,
+        method: 'wmi',
+        version: plain.version || 'unknown',
+        installRoot: plain.installRoot || RSCD_ROOT,
+        uninstallMessage: err.message,
+        steps: [],
+      };
+    }
   }
 
   async connect(vm) {

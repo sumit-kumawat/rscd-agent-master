@@ -25,8 +25,13 @@ export default function Sidebar({ collapsed, onToggle }) {
 
   return (
     <aside className={`dash-sidebar ${collapsed ? 'collapsed' : ''}`}>
-      <Link to="/dashboard" className="sidebar-brand sidebar-brand-logo-only" title="Dashboard">
-        <Logo height={collapsed ? 26 : 32} />
+      <Link to="/dashboard" className="sidebar-brand" title="Dashboard">
+        <Logo height={collapsed ? 26 : 28} />
+        {!collapsed && version && (
+          <span className="sidebar-version-badge">
+            v{version}
+          </span>
+        )}
       </Link>
       <nav className="sidebar-nav" aria-label="Main navigation">
         {navItems.map(({ to, label, icon: Icon, end }) => {
@@ -46,7 +51,6 @@ export default function Sidebar({ collapsed, onToggle }) {
         })}
       </nav>
       <div className="sidebar-footer">
-        {!collapsed && version && <div className="sidebar-version">v{version}</div>}
         <button type="button" className="sidebar-collapse-btn" onClick={onToggle} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
           {collapsed ? <ChevronRight size={16} strokeWidth={1.5} /> : <ChevronLeft size={16} strokeWidth={1.5} />}
           {!collapsed && <span>Collapse</span>}

@@ -120,6 +120,16 @@ app.use('/api/packages', packagesRoutes);
 app.use('/api/deployments', deploymentsRoutes);
 
 const publicDir = path.join(__dirname, '../public');
+app.get('/favicon.ico', (req, res) => {
+  res.sendFile(path.join(publicDir, 'favicon.png'), (err) => {
+    if (err) res.status(404).end();
+  });
+});
+app.get('/favicon.png', (req, res) => {
+  res.sendFile(path.join(publicDir, 'favicon.png'), (err) => {
+    if (err) res.status(404).end();
+  });
+});
 app.use('/assets', express.static(path.join(publicDir, 'assets'), {
   maxAge: isProd ? '365d' : 0,
   immutable: isProd,
@@ -132,7 +142,7 @@ app.use(express.static(publicDir, {
     }
   },
 }));
-app.get(/^\/(?!api|socket\.io|assets|favicon\.svg|icons\.svg).*/, (req, res, next) => {
+app.get(/^\/(?!api|socket\.io|assets|favicon\.svg|favicon\.png|favicon\.ico|icons\.svg).*/, (req, res, next) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return next();
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(path.join(publicDir, 'index.html'), (err) => {
@@ -159,6 +169,14 @@ const shutdown = (signal) => {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+process.on('unhandledRejection', (reason) => {
+  const msg = reason?.stack || reason?.message || String(reason);
+  logger.error(`Unhandled rejection (process kept alive): ${msg}`);
+});
+process.on('uncaughtException', (err) => {
+  logger.error(`Uncaught exception (process kept alive): ${err.stack || err.message}`);
+});
 
 const bootStarted = Date.now();
 connectDB().then(() => {

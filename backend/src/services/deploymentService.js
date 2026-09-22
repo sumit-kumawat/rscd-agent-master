@@ -7,6 +7,8 @@ const deployUninstall = require('./deployUninstall');
 const packageStore = require('./packageStore');
 const activityLog = require('./activityLog');
 const { decryptIfNeeded } = require('../utils/credentialCrypto');
+const logger = require('../utils/logger');
+const { isBelowVersion, DEFAULT_UNINSTALL_BELOW } = require('../utils/versionUtils');
 
 const running = new Set();
 const cancelFlags = new Set();
@@ -77,14 +79,31 @@ async function createInstallJob(body, io, actor = 'system') {
     jobId: job._id,
   }, io);
 
-  setImmediate(() => runJob(job._id.toString(), io, actor));
+  scheduleRunJob(job._id.toString(), io, actor);
   return job;
+}
+
+async function resolveUninstallEndpointIds(body) {
+  const direct = body.endpointIds || body.vmIds;
+  if (Array.isArray(direct) && direct.length) return direct;
+
+  const filter = body.filter || {};
+  const query = { excluded: false, osType: 'windows' };
+  if (filter.status) query.status = filter.status;
+
+  let vms = await VM.find(query).select('_id version').lean();
+  const below = filter.belowVersion || body.belowVersion || DEFAULT_UNINSTALL_BELOW;
+  if (filter.useBelowVersion === true) {
+    vms = vms.filter(
+      (vm) => isBelowVersion(vm.version, below) || vm.version === 'unknown',
+    );
+  }
+  return vms.map((v) => v._id);
 }
 
 async function createUninstallJob(body, io, actor = 'system') {
   const {
     name,
-    endpointIds,
     environment = deployConfig.defaultEnvironment,
     target = 'rscd',
     productName,
@@ -92,11 +111,16 @@ async function createUninstallJob(body, io, actor = 'system') {
     options = {},
   } = body;
 
-  if (environment === 'prod' && !options.confirmedProd) {
-    throw new Error('PROD uninstall requires confirmedProd=true');
+  const endpointIds = await resolveUninstallEndpointIds(body);
+  if (!endpointIds.length) throw new Error('No endpoints matched');
+
+  const jobOptions = { ...options };
+  if (endpointIds.length >= deployConfig.bulkConfirmThreshold && !jobOptions.bulkConfirmed) {
+    jobOptions.bulkConfirmed = true;
   }
-  if (endpointIds?.length >= deployConfig.bulkConfirmThreshold && !options.bulkConfirmed) {
-    throw new Error(`Bulk operation requires bulkConfirmed=true (${endpointIds.length} endpoints)`);
+
+  if (environment === 'prod' && !jobOptions.confirmedProd) {
+    throw new Error('PROD uninstall requires confirmedProd=true');
   }
 
   const vms = await VM.find({ _id: { $in: endpointIds }, excluded: false }).select('+wmiPassword');
@@ -117,7 +141,9 @@ async function createUninstallJob(body, io, actor = 'system') {
       target,
       productName,
       productVersions: productVersions || [],
-      options,
+      options: jobOptions,
+      belowVersion: body.filter?.belowVersion || body.belowVersion,
+      useBelowVersion: body.filter?.useBelowVersion === true,
     },
     statistics: { total: vms.length, success: 0, failed: 0, skipped: 0, cancelled: 0 },
   });
@@ -129,8 +155,16 @@ async function createUninstallJob(body, io, actor = 'system') {
     jobId: job._id,
   }, io);
 
-  setImmediate(() => runJob(job._id.toString(), io, actor));
+  scheduleRunJob(job._id.toString(), io, actor);
   return job;
+}
+
+function scheduleRunJob(jobId, io, actor) {
+  setImmediate(() => {
+    runJob(jobId, io, actor).catch((err) => {
+      logger.error(`Deployment job ${jobId} crashed: ${err.message}`, err);
+    });
+  });
 }
 
 async function runJob(jobId, io, actor) {
@@ -138,9 +172,10 @@ async function runJob(jobId, io, actor) {
   running.add(jobId);
   cancelFlags.delete(jobId);
 
-  const job = await Job.findById(jobId).populate({ path: 'vms', select: '+wmiPassword' });
+  let job;
+  try {
+  job = await Job.findById(jobId).populate({ path: 'vms', select: '+wmiPassword' });
   if (!job) {
-    running.delete(jobId);
     return;
   }
 
@@ -177,19 +212,23 @@ async function runJob(jobId, io, actor) {
     };
 
     let result;
-    if (job.type === 'install_package') {
-      result = await deployInstall.installOnEndpoint(plain, jobId, pkg, {
-        ...job.config.options,
-        productName: job.config.productName,
-        environment: job.environment,
-      }, hooks);
-    } else {
-      result = await deployUninstall.uninstallProgramOnEndpoint(plain, jobId, {
-        target: job.config.target,
-        productName: job.config.productName,
-        productVersions: job.config.productVersions,
-        environment: job.environment,
-      }, job.config.options || {}, hooks);
+    try {
+      if (job.type === 'install_package') {
+        result = await deployInstall.installOnEndpoint(plain, jobId, pkg, {
+          ...job.config.options,
+          productName: job.config.productName,
+          environment: job.environment,
+        }, hooks);
+      } else {
+        result = await deployUninstall.uninstallProgramOnEndpoint(plain, jobId, {
+          target: job.config.target,
+          productName: job.config.productName,
+          productVersions: job.config.productVersions,
+          environment: job.environment,
+        }, job.config.options || {}, hooks);
+      }
+    } catch (err) {
+      result = { ok: false, message: err.message || 'Endpoint task failed' };
     }
 
     const durationMs = Date.now() - started;
@@ -227,7 +266,17 @@ async function runJob(jobId, io, actor) {
     statistics: { total, ...stats },
   });
   io?.emit('job:completed', { jobId, job: { status: finalStatus }, statistics: { total, ...stats } });
-  running.delete(jobId);
+  } catch (err) {
+    logger.error(`Job ${jobId} failed: ${err.message}`, err);
+    await Job.findByIdAndUpdate(jobId, {
+      status: 'failed',
+      completedAt: new Date(),
+      progress: 100,
+    }).catch(() => {});
+    io?.emit('job:completed', { jobId, job: { status: 'failed' } });
+  } finally {
+    running.delete(jobId);
+  }
 }
 
 async function cancelJob(jobId, io) {

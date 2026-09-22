@@ -5,7 +5,6 @@ const VM = require('../../models/VM');
 const monitor = require('../../services/monitor');
 const { importExcel, importTxt } = require('../../services/import');
 const connectivity = require('../../services/connectivity');
-const uninstall = require('../../services/uninstall');
 const { deleteVmsWithCleanup } = require('../../services/vmCleanup');
 const activityLog = require('../../services/activityLog');
 const { requireOperator } = require('../../middleware/operatorAuth');
@@ -18,6 +17,8 @@ const io = (req) => req.app.get('io');
 
 const endpointDetail = require('./endpointDetail');
 const audit = require('../../utils/audit');
+const deploymentService = require('../../services/deploymentService');
+const deployConfig = require('../../config/deployConfig');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -249,30 +250,35 @@ router.delete('/:id', requireOperator, async (req, res) => {
   res.json({ success: true, message: 'Deleted', ...result });
 });
 
-router.post('/bulk-uninstall-rscd', async (req, res) => {
+router.post('/bulk-uninstall-rscd', requireOperator, async (req, res) => {
   const endpointIds = req.body?.endpointIds || req.body?.ids || req.body?.vmIds;
   if (!Array.isArray(endpointIds) || !endpointIds.length) {
     return res.status(400).json({ success: false, message: 'endpointIds array is required' });
   }
-  const job = await uninstall.createJob({
+  const environment = req.body?.environment || deployConfig.defaultEnvironment;
+  const actor = audit.resolveActor(req);
+  const job = await deploymentService.createUninstallJob({
     name: `Bulk RSCD uninstall (${endpointIds.length} endpoints)`,
-    vmIds: endpointIds,
-    filter: { useBelowVersion: false },
-  }, io(req));
+    endpointIds,
+    target: 'rscd',
+    environment,
+    options: { bulkConfirmed: true, ...(req.body?.options || {}) },
+  }, io(req), actor);
   return res.status(201).json({ success: true, data: job, job });
 });
 
 router.post('/:id/uninstall', requireOperator, async (req, res) => {
   const vm = await VM.findById(req.params.id);
   if (!vm) return res.status(404).json({ success: false, message: 'Not found' });
-  if (isAgentRemoved(vm)) {
-    return res.status(400).json({ success: false, message: 'Agent is already Removed — uninstall not applicable' });
-  }
-  const job = await uninstall.createJob({
+  const environment = req.body?.environment || vm.environment || deployConfig.defaultEnvironment;
+  const actor = audit.resolveActor(req);
+  const job = await deploymentService.createUninstallJob({
     name: req.body.name || `Uninstall — ${vm.name}`,
-    vmIds: [vm._id],
-    filter: { useBelowVersion: false },
-  }, req.app.get('io'));
+    endpointIds: [vm._id],
+    target: 'rscd',
+    environment,
+    options: req.body?.options || {},
+  }, io(req), actor);
   res.status(201).json({ success: true, data: job, job });
 });
 

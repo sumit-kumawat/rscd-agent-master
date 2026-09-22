@@ -41,26 +41,31 @@ async function uninstallProgramOnEndpoint(vm, jobId, spec, options, hooks) {
   const target = spec.target || 'custom';
 
   if (target === 'rscd') {
-    onStatus('uninstalling');
-    onLog('uninstalling', 'Using RSCD uninstall pipeline');
-    const result = await winRemote.runUninstall(vm, {
-      onLog: (level, msg) => onLog('uninstalling', msg, level),
-      onPhase: ({ phase }) => onStatus(phase),
-    });
-    if (result.alreadyRemoved || result.notPresent) {
-      return { ok: true, skipped: true, message: 'RSCD already absent', agentName: 'RSCD Agent', agentVersion: '' };
+    try {
+      onStatus('uninstalling');
+      onLog('uninstalling', 'Using RSCD uninstall pipeline');
+      const result = await winRemote.runUninstall(vm, {
+        onLog: (level, msg) => onLog('uninstalling', msg, level),
+        onPhase: ({ phase }) => onStatus(phase),
+      });
+      if (result.alreadyRemoved || result.notPresent) {
+        return { ok: true, skipped: true, message: 'RSCD already absent', agentName: 'RSCD Agent', agentVersion: '' };
+      }
+      return {
+        ok: result.success,
+        message: result.success ? 'RSCD removed' : (result.error || 'Uninstall failed'),
+        agentName: 'RSCD Agent',
+        agentVersion: vm.rscdVersion || vm.version || '',
+        rebootRequired: result.rebootRequired,
+      };
+    } catch (err) {
+      onStatus('failed');
+      return { ok: false, message: err.message, agentName: 'RSCD Agent', agentVersion: '' };
     }
-    return {
-      ok: result.success,
-      message: result.success ? 'RSCD removed' : (result.error || 'Uninstall failed'),
-      agentName: 'RSCD Agent',
-      agentVersion: vm.rscdVersion || vm.version || '',
-      rebootRequired: result.rebootRequired,
-    };
   }
 
-  const session = await deployInstall.sessionFromVm(vm);
   try {
+    const session = await deployInstall.sessionFromVm(vm);
     onStatus('connecting');
     const { programs } = await registrySoftware.fetchInstalledPrograms(session);
     onStatus('detecting');

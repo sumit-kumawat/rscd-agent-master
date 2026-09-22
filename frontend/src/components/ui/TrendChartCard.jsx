@@ -3,7 +3,7 @@ import {
 } from 'recharts';
 import CardShell, { CardEmpty, CardLoading } from './CardShell';
 
-const PRIMARY = '#0A84FF';
+const PRIMARY = '#F55A4D';
 
 export default function TrendChartCard({
   title, subtitle, data, legend, loading, empty, rangeLabel = '7d',

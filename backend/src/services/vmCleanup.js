@@ -1,6 +1,6 @@
 const VM = require('../models/VM');
 const Job = require('../models/Job');
-const uninstall = require('./uninstall');
+const deploymentService = require('./deploymentService');
 const activityLog = require('./activityLog');
 
 async function cleanupJobsForVms(vmIds, io) {
@@ -14,7 +14,7 @@ async function cleanupJobsForVms(vmIds, io) {
     if (remaining.length === 0) {
       if (job.status === 'running') {
         try {
-          await uninstall.cancel(job._id.toString(), io);
+          await deploymentService.cancelJob(job._id.toString(), io);
         } catch {
           job.status = 'cancelled';
           job.completedAt = new Date();

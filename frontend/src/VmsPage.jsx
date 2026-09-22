@@ -3,7 +3,7 @@ import {
 } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
-  RefreshCw, Plus, Upload, Search, Trash2, Power, Rocket,
+  RefreshCw, Plus, Upload, Search, Trash2, Rocket,
 } from 'lucide-react';
 import DeployWizard from './components/DeployWizard';
 import api from './api';
@@ -18,7 +18,7 @@ import BulkUninstallDialog from './components/BulkUninstallDialog';
 import Portal from './components/Portal';
 import { useSync } from './context/SyncContext';
 import {
-  crowdStrikeActiveLabel, displayIp, displayOs, isRemoved, powerIsUp, rscdActiveLabel,
+  crowdStrikeActiveLabel, displayIp, displayOs, powerIsUp, rscdActiveLabel,
 } from './utils/assetsDisplay';
 
 function patchVmList(list, payload) {
@@ -121,7 +121,7 @@ const AssetRow = memo(function AssetRow({ vm, selected, isActive, onOpen, onTogg
         <input
           type="checkbox"
           checked={selected}
-          disabled={isRemoved(vm)}
+          disabled={!!vm.excluded}
           onChange={() => onToggleSelect(vm._id)}
         />
       </td>
@@ -149,8 +149,6 @@ export default function VmsPage() {
   const [lightbox, setLightbox] = useState(null);
   const [lightboxTab, setLightboxTab] = useState('overview');
   const [deployOpen, setDeployOpen] = useState(false);
-  const [bulkPowerAction, setBulkPowerAction] = useState('');
-  const [bulkPassword, setBulkPassword] = useState('');
   const [bulkUninstallOpen, setBulkUninstallOpen] = useState(false);
   const [bulkUninstallLoading, setBulkUninstallLoading] = useState(false);
   const fileRef = useRef(null);
@@ -233,10 +231,10 @@ export default function VmsPage() {
   };
 
   const selectedVms = list.filter((vm) => selected.includes(vm._id));
-  const canBulkUninstall = selectedVms.some((vm) => !isRemoved(vm) && !vm.excluded);
+  const canBulkUninstall = selectedVms.some((vm) => !vm.excluded);
 
   const bulkUninstall = async () => {
-    const targets = selectedVms.filter((vm) => !isRemoved(vm) && !vm.excluded);
+    const targets = selectedVms.filter((vm) => !vm.excluded);
     if (!targets.length) return;
     setBulkUninstallLoading(true);
     try {
@@ -250,19 +248,6 @@ export default function VmsPage() {
       toast(e.message, 'error');
     } finally {
       setBulkUninstallLoading(false);
-    }
-  };
-
-  const bulkPower = async () => {
-    if (!bulkPowerAction || !bulkPassword || !selected.length) return;
-    if (!confirm(`Run ${bulkPowerAction} on ${selected.length} endpoint(s)?`)) return;
-    try {
-      const r = await api.post('/vms/bulk-power', { ids: selected, action: bulkPowerAction, password: bulkPassword });
-      const ok = r.results?.filter((x) => x.ok).length || 0;
-      toast(`Power sent to ${ok}/${selected.length}`, ok ? 'success' : 'warning');
-      reload();
-    } catch (e) {
-      toast(e.message, 'error');
     }
   };
 
@@ -282,17 +267,6 @@ export default function VmsPage() {
         </select>
         {selected.length > 0 && (
           <>
-            <select className="input toolbar-select" value={bulkPowerAction} onChange={(e) => setBulkPowerAction(e.target.value)}>
-              <option value="">Bulk power…</option>
-              <option value="power_off_graceful">Power Off (graceful)</option>
-              <option value="power_off_force">Power Off (force)</option>
-              <option value="restart_graceful">Restart (graceful)</option>
-              <option value="graceful_shutdown">Graceful Shutdown</option>
-            </select>
-            <input className="input" type="password" placeholder="RDSROOT password" value={bulkPassword} onChange={(e) => setBulkPassword(e.target.value)} style={{ maxWidth: 160 }} />
-            <button className="btn btn-outline btn-sm" disabled={!bulkPowerAction || !bulkPassword} onClick={bulkPower}>
-              <Power size={14} /> Apply ({selected.length})
-            </button>
             <button type="button" className="btn btn-primary btn-sm" onClick={() => setDeployOpen(true)}>
               <Rocket size={14} strokeWidth={1.5} /> Deploy ({selected.length})
             </button>
@@ -354,7 +328,7 @@ export default function VmsPage() {
       {bulkUninstallOpen && (
         <Portal>
           <BulkUninstallDialog
-            endpoints={selectedVms.filter((vm) => !isRemoved(vm) && !vm.excluded)}
+            endpoints={selectedVms.filter((vm) => !vm.excluded)}
             onConfirm={bulkUninstall}
             onClose={() => setBulkUninstallOpen(false)}
             loading={bulkUninstallLoading}

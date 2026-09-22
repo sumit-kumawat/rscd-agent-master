@@ -26,12 +26,13 @@ function installRootIndicatesRscd(vm) {
 }
 
 export function rscdActiveLabel(vm) {
-  if (vm?.agentStatus === 'removed' || vm?.version === 'removed') return 'Inactive';
+  if (vm?.rscdStatus === 'absent') return 'Inactive';
   if (vm?.rscdStatus === 'installed') return 'Active';
   if (installRootIndicatesRscd(vm)) return 'Active';
-  if (vm?.status === 'online' && vm?.version && vm.version !== 'unknown' && vm.version !== 'removed') {
+  if (vm?.agentStatus === 'active' && vm?.version && vm.version !== 'removed' && vm.version !== 'unknown') {
     return 'Active';
   }
+  if (vm?.status === 'online' || vm?.connectivityState === 'online') return 'Active';
   return 'Inactive';
 }
 

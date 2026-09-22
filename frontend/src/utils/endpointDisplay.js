@@ -1,10 +1,11 @@
 /** Derive display power state from VM record when powerState is stale or unknown. */
 export function resolvePowerState(vm) {
+  if (vm?.status === 'online' || vm?.connectivityState === 'online') return 'on';
+
   const raw = vm?.powerState;
   if (raw === 'on' || raw === 'off') return raw;
 
   const state = vm?.connectivityState || vm?.status;
-  if (vm?.status === 'online' || state === 'online') return 'on';
   if (['unreachable', 'timeout', 'offline', 'dns_failed'].includes(state)) return 'off';
   if (['auth_failed', 'permission_denied', 'wmi_unavailable', 'relay_unavailable', 'in_progress'].includes(state)) {
     return 'on';

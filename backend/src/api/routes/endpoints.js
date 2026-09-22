@@ -1,6 +1,6 @@
 const express = require('express');
 const VM = require('../../models/VM');
-const uninstall = require('../../services/uninstall');
+const deploymentService = require('../../services/deploymentService');
 const programQuery = require('../../services/programQuery');
 const registrySoftware = require('../../services/registrySoftware');
 const deployInstall = require('../../services/deployInstall');
@@ -48,12 +48,14 @@ router.post('/bulk-uninstall-rscd', async (req, res) => {
   }
 
   const actor = audit.resolveActor(req);
-  const job = await uninstall.createJob({
+  const environment = req.body?.environment || 'rnd';
+  const job = await deploymentService.createUninstallJob({
     name: `Bulk RSCD uninstall (${endpointIds.length} endpoints)`,
-    vmIds: endpointIds,
-    filter: { useBelowVersion: false },
-    type: 'rscd_uninstall',
-  }, io(req));
+    endpointIds,
+    target: 'rscd',
+    environment,
+    options: { bulkConfirmed: true, ...(req.body?.options || {}) },
+  }, io(req), actor);
 
   await audit.log({
     action: 'rscd.bulk_uninstall',

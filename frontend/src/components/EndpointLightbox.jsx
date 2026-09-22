@@ -9,7 +9,7 @@ import api from '../api';
 import { onSocket } from '../socket';
 import { useToast } from './Toast';
 import { resolvePowerState } from '../utils/endpointDisplay';
-import { buildCachedTabData, mergeTabData, isAgentRemoved } from '../utils/lightboxCache';
+import { buildCachedTabData, mergeTabData } from '../utils/lightboxCache';
 import { useApiQuery } from '../hooks/useApiQuery';
 import { launchRemoteDesktop } from '../utils/launchRemoteDesktop';
 import { TabErrorBoundary } from './ErrorBoundary';
@@ -191,8 +191,8 @@ function TabSoftware({ data, refreshing }) {
 }
 
 function TabRscd({ vm, data, onUninstall, uninstalling, uninstallJobId, uninstallProgress }) {
-  const removed = isAgentRemoved(vm);
-  const active = data?.agentStatus === 'active' && !removed;
+  const removed = data?.agentStatus === 'removed' || vm?.version === 'removed';
+  const active = data?.agentStatus === 'active' || vm?.status === 'online' || vm?.rscdStatus === 'installed';
   return (
     <div className="lb-section">
       <div className="lb-card-grid">
@@ -217,13 +217,13 @@ function TabRscd({ vm, data, onUninstall, uninstalling, uninstallJobId, uninstal
         <button
           type="button"
           className="btn btn-danger"
-          disabled={removed || vm.excluded || uninstalling}
+          disabled={vm.excluded || uninstalling}
           onClick={onUninstall}
         >
           {uninstalling ? <Loader2 className="spin" size={16} strokeWidth={1.5} /> : <Trash2 size={16} strokeWidth={1.5} />}
           {uninstalling ? 'Uninstalling…' : 'Uninstall RSCD Agent'}
         </button>
-        {removed && <span className="lb-detail-muted">Agent already removed from this host.</span>}
+        {removed && <span className="lb-detail-muted">DB shows removed — you can still run cleanup/uninstall again.</span>}
         {vm.excluded && <span className="lb-detail-muted">Excluded endpoints cannot be uninstalled.</span>}
       </div>
       {uninstallJobId && (
@@ -420,7 +420,6 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
   };
 
   const handleUninstall = async () => {
-    if (isAgentRemoved(vm)) return;
     if (!confirm(`Permanently uninstall the RSCD agent on ${vm.name}?\n\nThis will stop services, remove from Programs & Features, clean registry and directories.`)) return;
     setUninstalling(true);
     setUninstallProgress(0);

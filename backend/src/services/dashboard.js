@@ -3,8 +3,8 @@ const Job = require('../models/Job');
 const ActivityLog = require('../models/ActivityLog');
 const endpointSync = require('./endpointSync');
 
-const CHART_PRIMARY = '#0A84FF';
-const CHART_COLORS = ['#0A84FF', '#5B6FD6', '#8FA4E8', '#C5D0F5', '#94A3B8'];
+const CHART_PRIMARY = '#F55A4D';
+const CHART_COLORS = ['#F55A4D', '#052140', '#5B6FD6', '#8FA4E8', '#94A3B8'];
 
 function lastNDays(n) {
   const days = [];
@@ -28,7 +28,7 @@ function buildVmQuery(filter = {}) {
 async function getDashboardSynced(filter = {}) {
   const vmQuery = buildVmQuery(filter);
   const allVms = await VM.find(vmQuery)
-    .select('status agentStatus version localUsers powerState lastFullSyncAt')
+    .select('status agentStatus version localUsers powerState lastFullSyncAt rscdStatus crowdStrikeStatus')
     .lean();
 
   const total = allVms.length;
@@ -37,6 +37,9 @@ async function getDashboardSynced(filter = {}) {
   const activeAgents = allVms.filter(
     (v) => v.agentStatus !== 'removed' && v.version !== 'removed',
   ).length;
+  const rscdActive = allVms.filter((v) => v.rscdStatus === 'installed' || (v.agentStatus === 'active' && v.version && v.version !== 'removed')).length;
+  const rscdAbsent = allVms.filter((v) => v.rscdStatus === 'absent' || v.agentStatus === 'removed').length;
+  const csInstalled = allVms.filter((v) => v.crowdStrikeStatus === 'installed').length;
 
   const requiredPerHost = 3;
   const localPresent = allVms.reduce((s, v) => s + (v.localUsers?.present || 0), 0);
@@ -83,7 +86,7 @@ async function getDashboardSynced(filter = {}) {
 
   const donutSegments = [
     { name: 'Online', value: online, color: CHART_PRIMARY },
-    { name: 'Offline', value: offline, color: '#FF3B30' },
+    { name: 'Offline', value: offline, color: '#052140' },
     { name: 'In progress', value: allVms.filter((v) => v.status === 'in_progress').length, color: '#FF9500' },
     { name: 'Excluded', value: await VM.countDocuments({ excluded: true, osType: 'windows' }), color: '#8E8E93' },
   ].filter((s) => s.value > 0);
@@ -100,6 +103,14 @@ async function getDashboardSynced(filter = {}) {
     stats: {
       totalEndpoints: { value: total, unit: 'endpoints' },
       onlineEndpoints: { value: online, unit: 'synced online' },
+    },
+    kpis: {
+      total,
+      online,
+      offline,
+      rscdActive,
+      rscdAbsent,
+      crowdStrikeInstalled: csInstalled,
     },
     trend: {
       series: trend,
@@ -194,14 +205,16 @@ async function getDashboardLive(filter = {}) {
     };
   });
 
-  const recentHeartbeats = await ActivityLog.find({
-    category: { $in: ['monitor', 'sync'] },
-    timestamp: { $gte: new Date(Date.now() - 3600000) },
+  const since24h = new Date(Date.now() - 86400000);
+  const trackLogs = await ActivityLog.find({
+    timestamp: { $gte: since24h },
   })
     .sort({ timestamp: -1 })
-    .limit(5)
-    .select('message timestamp category')
+    .limit(60)
+    .select('message timestamp category level status meta vmName actor')
     .lean();
+
+  const offlineNow = vms.length - onlineNow;
 
   return {
     stats: {
@@ -210,13 +223,25 @@ async function getDashboardLive(filter = {}) {
       powerOff: { value: powerOff, unit: 'power off' },
       jobsRunning: { value: jobsRunning, unit: 'running jobs' },
     },
+    kpis: {
+      online: onlineNow,
+      offline: offlineNow,
+      jobsRunning,
+      powerOn,
+      powerOff,
+    },
+    track: {
+      items: trackLogs.map((l) => ({
+        id: String(l._id),
+        message: l.message,
+        time: l.timestamp,
+        category: l.category || 'activity',
+        level: l.level || (l.status === 'failed' || l.status === 'error' ? 'error' : 'info'),
+        detail: l.vmName || l.meta?.vm || l.meta?.endpoint || (l.actor && l.actor !== 'system' ? `actor: ${l.actor}` : ''),
+      })),
+    },
     list: { title: 'Needs attention', items: list },
     bars: { items: bars, label: 'Jobs created (6 days)' },
-    heartbeats: recentHeartbeats.map((l) => ({
-      label: l.message,
-      time: l.timestamp,
-      category: l.category,
-    })),
     meta: {
       source: 'live',
       generatedAt: new Date().toISOString(),

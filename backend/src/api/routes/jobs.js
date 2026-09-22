@@ -1,8 +1,8 @@
 const express = require('express');
 const Job = require('../../models/Job');
-const uninstall = require('../../services/uninstall');
 const deploymentService = require('../../services/deploymentService');
 const { requireOperator } = require('../../middleware/operatorAuth');
+const audit = require('../../utils/audit');
 
 const router = express.Router();
 const io = (req) => req.app.get('io');
@@ -25,16 +25,14 @@ router.get('/:id', async (req, res) => {
 });
 
 router.post('/', requireOperator, async (req, res) => {
-  const job = await uninstall.createJob(req.body, io(req));
+  const actor = audit.resolveActor(req);
+  const job = await deploymentService.createUninstallJob(req.body, io(req), actor);
   res.status(201).json({ success: true, data: job, job });
 });
 
 router.post('/:id/cancel', requireOperator, async (req, res) => {
   try {
-    const existing = await Job.findById(req.params.id);
-    const job = existing && ['install_package', 'uninstall_program', 'uninstall_rscd'].includes(existing.type)
-      ? await deploymentService.cancelJob(req.params.id, io(req))
-      : await uninstall.cancel(req.params.id, io(req));
+    const job = await deploymentService.cancelJob(req.params.id, io(req));
     res.json({ success: true, data: job });
   } catch (err) {
     res.status(400).json({ success: false, message: err.message });

@@ -53,14 +53,27 @@ async function checkAndUpdate(vm, options = {}) {
   if (probe.connectivityState === CONNECTIVITY_STATES.ONLINE) {
     updates.status = plain.excluded ? 'excluded' : 'online';
     updates.powerState = 'on';
+    updates.connectivityState = CONNECTIVITY_STATES.ONLINE;
     updates.lastSeenAt = new Date();
     updates.wmiReachable = true;
     updates.authStatus = 'allowed';
     updates.connectivityMethod = 'wmi';
     updates.lastProbeError = probe.lightweight ? '' : (probe.error || '');
-    updates.agentStatus = probe.agentStatus;
-    updates.version = probe.agentStatus === 'removed' ? 'removed' : probe.version;
+    const agentStatus = probe.agentStatus === 'unknown' ? 'active' : probe.agentStatus;
+    updates.agentStatus = agentStatus;
+    updates.version = agentStatus === 'removed' ? 'removed' : (probe.version || plain.version || 'unknown');
     if (probe.installRoot) updates.installRoot = probe.installRoot;
+    if (agentStatus === 'removed') {
+      updates.rscdStatus = 'absent';
+      updates.rscdVersion = '';
+    } else if (agentStatus === 'active' && updates.version && updates.version !== 'unknown') {
+      updates.rscdStatus = 'installed';
+      updates.rscdVersion = updates.version;
+    } else if (plain.rscdStatus && plain.rscdStatus !== 'unknown') {
+      updates.rscdStatus = plain.rscdStatus;
+    } else {
+      updates.rscdStatus = 'installed';
+    }
     if (probe.ip && isValidIpv4(probe.ip)) updates.ip = probe.ip;
     if (probe.wmiUser) updates.wmiUsername = probe.wmiUser;
     if (probe.wmiDomain) updates.wmiDomain = probe.wmiDomain;

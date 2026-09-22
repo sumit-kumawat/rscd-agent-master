@@ -264,10 +264,13 @@ class AgentProbeService {
       const session = await this.connectWmi(plain);
       let data;
       if (lightweight) {
+        const priorAgent = plain.agentStatus && plain.agentStatus !== 'unknown'
+          ? plain.agentStatus
+          : 'active';
         data = {
-          agentStatus: plain.agentStatus || 'active',
+          agentStatus: priorAgent,
           ip: resolvedIp || (isValidIpv4(plain.ip) ? plain.ip : ''),
-          version: plain.version || 'unknown',
+          version: plain.version && plain.version !== 'unknown' ? plain.version : 'unknown',
           installRoot: plain.installRoot || RSCD_ROOT,
         };
       } else {
@@ -413,16 +416,29 @@ class AgentProbeService {
   }
 
   async probeOnSession(session) {
-    const data = await this._probeSession(session);
-    const codes = await this._getProductCodes(session);
-    return {
-      ...data,
-      installed: data.agentStatus === 'active',
-      codes,
-      installRoots: data.installRoot
-        ? [...new Set([data.installRoot, ...CANDIDATE_ROOTS])]
-        : CANDIDATE_ROOTS,
-    };
+    try {
+      const data = await this._probeSession(session);
+      const codes = await this._getProductCodes(session);
+      return {
+        ...data,
+        installed: data.agentStatus === 'active',
+        codes,
+        installRoots: data.installRoot
+          ? [...new Set([data.installRoot, ...CANDIDATE_ROOTS])]
+          : CANDIDATE_ROOTS,
+      };
+    } catch (err) {
+      logger.debug(`probeOnSession error: ${err.message}`);
+      return {
+        agentStatus: 'unknown',
+        installed: false,
+        version: 'unknown',
+        installRoot: CANDIDATE_ROOTS[0] || RSCD_ROOT,
+        codes: [],
+        installRoots: CANDIDATE_ROOTS,
+        probeError: err.message,
+      };
+    }
   }
 
   async _getProductCodes(session) {
