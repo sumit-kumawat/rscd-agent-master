@@ -3,8 +3,9 @@ import {
 } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
-  RefreshCw, Plus, Upload, Search, Trash2, Power, Rocket,
+  RefreshCw, Plus, Upload, Search, Trash2, Power, Rocket, Monitor,
 } from 'lucide-react';
+import { launchRemoteDesktop } from './utils/launchRemoteDesktop';
 import { useEnvironment } from './context/EnvironmentContext';
 import DeployWizard from './components/DeployWizard';
 import api from './api';
@@ -115,7 +116,7 @@ function VmModal({ vm, onClose, onSaved, onChecking }) {
 }
 
 const VmRow = memo(function VmRow({
-  vm, selected, isActive, onOpen, onToggleSelect,
+  vm, selected, isActive, onOpen, onToggleSelect, onRdp,
 }) {
   return (
     <tr
@@ -138,6 +139,11 @@ const VmRow = memo(function VmRow({
       <td className="col-mono">{vm.rscdVersion || vm.version || '—'}</td>
       <td className="col-status">{vm.crowdStrikeStatus === 'installed' ? `v${vm.crowdStrikeVersion || '?'}` : '—'}</td>
       <td className="col-status"><PowerBadge vm={vm} /></td>
+      <td className="col-actions" onClick={(e) => e.stopPropagation()}>
+        <button type="button" className="btn btn-outline btn-sm" title="Launch Remote Desktop" onClick={() => onRdp(vm)}>
+          <Monitor size={14} strokeWidth={1.5} />
+        </button>
+      </td>
     </tr>
   );
 });
@@ -348,15 +354,16 @@ export default function VmsPage() {
               <th>RSCD ver.</th>
               <th>CrowdStrike</th>
               <th>Power</th>
+              <th className="col-actions">RDP</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={9}><TableSkeleton rows={6} cols={7} /></td></tr>
+              <tr><td colSpan={10}><TableSkeleton rows={6} cols={7} /></td></tr>
             ) : isError ? (
-              <tr><td colSpan={9} className="empty">{error} — <button className="btn btn-outline btn-sm" onClick={() => reload(false)}>Retry</button></td></tr>
+              <tr><td colSpan={10} className="empty">{error} — <button className="btn btn-outline btn-sm" onClick={() => reload(false)}>Retry</button></td></tr>
             ) : vms.length === 0 ? (
-              <tr><td colSpan={9} className="empty">No endpoints — add or import hosts to get started</td></tr>
+              <tr><td colSpan={10} className="empty">No endpoints — add or import hosts to get started</td></tr>
             ) : vms.map((vm) => (
               <VmRow
                 key={vm._id}
@@ -365,6 +372,7 @@ export default function VmsPage() {
                 isActive={lightbox?._id === vm._id}
                 onOpen={openLightbox}
                 onToggleSelect={toggleSelect}
+                onRdp={(v) => launchRemoteDesktop(v._id, toast)}
               />
             ))}
           </tbody>

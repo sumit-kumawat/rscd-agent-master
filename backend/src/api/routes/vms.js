@@ -350,6 +350,44 @@ router.post('/:id/diagnostics', async (req, res) => {
   }
 });
 
+const remoteDesktop = require('../../services/remoteDesktop');
+
+router.post('/:id/remote-desktop/launch', async (req, res) => {
+  const vm = await VM.findById(req.params.id).lean();
+  if (!vm) return res.status(404).json({ success: false, message: 'Not found' });
+  try {
+    const data = await remoteDesktop.launchSession(vm, audit.resolveActor(req), io(req));
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/remote-desktop/end', async (req, res) => {
+  const { sessionId } = req.body || {};
+  if (!sessionId) return res.status(400).json({ success: false, message: 'sessionId required' });
+  const data = await remoteDesktop.endSession(sessionId, audit.resolveActor(req), io(req));
+  res.json({ success: true, data });
+});
+
+router.get('/:id/remote-desktop/embed', (req, res) => {
+  const session = remoteDesktop.getSession(req.query.session);
+  const guac = (process.env.GUACAMOLE_PUBLIC_URL || '').replace(/\/$/, '');
+  if (!session || !guac) {
+    return res.status(404).send('Remote desktop session unavailable. Configure GUACAMOLE_PUBLIC_URL.');
+  }
+  const src = `${guac}/#/client/${encodeURIComponent(session.host)}`;
+  res.setHeader('Content-Security-Policy', `frame-src ${guac}`);
+  res.type('html').send(
+    `<!DOCTYPE html><html><head><title>RDP — ${session.vmName}</title></head>`
+    + `<body style="margin:0;background:#052140">`
+    + `<iframe title="Remote Desktop" src="${src}" style="width:100%;height:100vh;border:0"></iframe>`
+    + `<script>window.addEventListener('beforeunload',()=>{navigator.sendBeacon('/api/vms/remote-desktop/end',`
+    + `new Blob([JSON.stringify({sessionId:'${session.sessionId}'})],{type:'application/json'}));});</script>`
+    + `</body></html>`,
+  );
+});
+
 /** Mount detail sub-routes last so /:id/check, /:id/uninstall, etc. match first */
 router.use('/:id', endpointDetail);
 

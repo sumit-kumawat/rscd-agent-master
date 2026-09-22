@@ -44,8 +44,14 @@ export function buildCachedTabData(vm, tabId) {
         users: vm.localUsers?.users || [],
         checkedAt: vm.localUsers?.checkedAt,
       };
-    case 'software':
-      return { programs: vm.installedSoftware || [] };
+    case 'software': {
+      const programs = (vm.softwareSnapshot?.programs || []).map((p) => ({
+        name: p.name,
+        version: p.version,
+        publisher: p.publisher,
+      }));
+      return { programs, capturedAt: vm.softwareSnapshot?.capturedAt };
+    }
     case 'rscd':
       return {
         serviceInstalled: vm.agentStatus === 'active' && !isAgentRemoved(vm),

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { LayoutDashboard, Server, Briefcase, ScrollText, ChevronLeft, ChevronRight } from 'lucide-react';
 import Logo from '../../Logo';
@@ -10,6 +11,11 @@ const navItems = [
 ];
 
 export default function Sidebar({ collapsed, onToggle, onRefresh }) {
+  const [version, setVersion] = useState('');
+  useEffect(() => {
+    fetch('/health').then((r) => r.json()).then((r) => setVersion(r.version || '')).catch(() => {});
+  }, []);
+
   return (
     <aside className={`dash-sidebar ${collapsed ? 'collapsed' : ''}`}>
       <button type="button" className="sidebar-brand" onClick={onRefresh} title="Refresh metrics">
@@ -31,6 +37,7 @@ export default function Sidebar({ collapsed, onToggle, onRefresh }) {
         ))}
       </nav>
       <div className="sidebar-footer">
+        {!collapsed && version && <div className="sidebar-version">v{version}</div>}
         <button type="button" className="sidebar-collapse-btn" onClick={onToggle} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
           {collapsed ? <ChevronRight size={16} strokeWidth={1.5} /> : <ChevronLeft size={16} strokeWidth={1.5} />}
           {!collapsed && <span>Collapse</span>}

@@ -17,7 +17,7 @@ export function useApiQuery(fetcher, deps = [], options = {}) {
   } = options;
 
   const [status, setStatus] = useState(
-    initialData !== undefined ? 'success' : 'idle',
+    initialData !== undefined && initialData !== null ? 'success' : 'idle',
   );
   const [data, setData] = useState(initialData);
   const [error, setError] = useState(null);
@@ -58,7 +58,13 @@ export function useApiQuery(fetcher, deps = [], options = {}) {
         setStatus(isEmpty ? 'empty' : 'success');
         return;
       } catch (err) {
-        if (err.name === 'AbortError') return;
+        if (err.name === 'AbortError') {
+          if (id === runId.current) {
+            const stillHasData = dataRef.current !== undefined && dataRef.current !== null;
+            setStatus(stillHasData ? 'success' : 'idle');
+          }
+          return;
+        }
         lastErr = err;
         if (attempt < retries) await sleep(Math.min(1000 * 2 ** attempt, 8000));
       }
@@ -71,10 +77,19 @@ export function useApiQuery(fetcher, deps = [], options = {}) {
   }, [enabled, retries, timeout]);
 
   useEffect(() => {
-    reload(false);
+    setData(initialData);
+    dataRef.current = initialData;
+    setError(null);
+    setStatus(
+      initialData !== undefined && initialData !== null ? 'success' : (enabled ? 'idle' : 'empty'),
+    );
+
+    if (!enabled) return undefined;
+
+    reload(true);
     return () => { abortRef.current?.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reload, ...deps]);
+  }, [reload, enabled, initialData, ...deps]);
 
   const silentReload = useCallback(() => reload(true), [reload]);
   const isLoading = status === 'loading';

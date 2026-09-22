@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  X, Loader2, RefreshCw, ExternalLink, Power, Trash2,
-  LayoutDashboard, Cpu, Users, Package, Shield, ScrollText, Monitor, ClipboardList,
+  X, Loader2, RefreshCw, ExternalLink, Power, Trash2, Monitor,
+  LayoutDashboard, Cpu, Users, Package, Shield, ScrollText, ClipboardList,
   Server, HardDrive, Wifi, Clock, Tag, CircleDot, CheckCircle2, XCircle, AlertCircle,
 } from 'lucide-react';
 import api from '../api';
@@ -11,6 +11,7 @@ import { useToast } from './Toast';
 import { resolvePowerState } from '../utils/endpointDisplay';
 import { buildCachedTabData, mergeTabData, isAgentRemoved } from '../utils/lightboxCache';
 import { useApiQuery } from '../hooks/useApiQuery';
+import { launchRemoteDesktop } from '../utils/launchRemoteDesktop';
 import { TabErrorBoundary } from './ErrorBoundary';
 import { GridSkeleton, TableSkeleton, ListSkeleton } from './ui/TabSkeletons';
 import Portal from './Portal';
@@ -97,12 +98,15 @@ function TabOverview({ data }) {
   );
 }
 
-function TabSystem({ data, refreshing }) {
+function TabSystem({ data, refreshing, stale }) {
   const hasDetail = data?.cpu || data?.ramGb || data?.disks?.length;
   return (
     <div className="lb-section">
-      {refreshing && !hasDetail && (
-        <div className="lb-refresh-hint"><Loader2 className="spin" size={14} strokeWidth={1.5} /> Fetching live system data…</div>
+      {stale && !hasDetail && (
+        <div className="lb-refresh-hint lb-refresh-muted">Showing inventory snapshot — host offline or WMI unreachable.</div>
+      )}
+      {refreshing && (
+        <div className="lb-refresh-hint"><Loader2 className="spin" size={14} strokeWidth={1.5} /> Refreshing live system data…</div>
       )}
       <div className="lb-card-grid">
         <InfoCard icon={Cpu} label="CPU" value={data?.cpu || '—'} />
@@ -137,7 +141,7 @@ function TabLocalUsers({ data, refreshing }) {
           <InfoCard icon={Clock} label="Last Checked" value={new Date(data.checkedAt).toLocaleString()} />
         )}
       </div>
-      {refreshing && !users.length && (
+      {refreshing && (
         <div className="lb-refresh-hint"><Loader2 className="spin" size={14} strokeWidth={1.5} /> Refreshing local users…</div>
       )}
       {users.length ? (
@@ -166,8 +170,8 @@ function TabSoftware({ data, refreshing }) {
   const programs = data?.programs || [];
   return (
     <div className="lb-section">
-      {refreshing && !programs.length && (
-        <div className="lb-refresh-hint"><Loader2 className="spin" size={14} strokeWidth={1.5} /> Loading installed software…</div>
+      {refreshing && (
+        <div className="lb-refresh-hint"><Loader2 className="spin" size={14} strokeWidth={1.5} /> Refreshing installed software…</div>
       )}
       {programs.length ? (
         <table className="lightbox-table">
@@ -330,13 +334,21 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
   const dialogRef = useRef(null);
   const toast = useToast();
   const nav = useNavigate();
+  const cachedData = useMemo(() => buildCachedTabData(vm, tab), [vm, tab]);
+  const vmOnline = vm?.status === 'online' || vm?.connectivityState === 'online';
+
   const tabQuery = useApiQuery(
     async ({ timeout, signal }) => {
       const r = await api.get(`/vms/${vm._id}/detail/${tab}`, { timeout, signal });
       return r.data;
     },
     [vm?._id, tab],
-    { timeout: 15000, enabled: !!vm?._id },
+    {
+      timeout: 25000,
+      retries: 1,
+      enabled: !!vm?._id,
+      initialData: cachedData,
+    },
   );
 
   useEffect(() => {
@@ -432,9 +444,8 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
 
   if (!vm) return null;
 
-  const cachedData = useMemo(() => buildCachedTabData(vm, tab), [vm, tab]);
   const displayData = mergeTabData(vm, tab, tabQuery.data) ?? cachedData;
-  const refreshing = tabQuery.isLoading && !!displayData;
+  const refreshing = tabQuery.isLoading && tabQuery.data != null && vmOnline;
 
   const renderTab = () => {
     if (tabQuery.isError && !displayData) {
@@ -452,7 +463,7 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
 
     switch (tab) {
       case 'overview': return <TabOverview data={displayData} />;
-      case 'system': return <TabSystem data={displayData} refreshing={refreshing} />;
+      case 'system': return <TabSystem data={displayData} refreshing={refreshing} stale={displayData?.source === 'inventory' || displayData?.offline} />;
       case 'local-users': return <TabLocalUsers data={displayData} refreshing={refreshing} />;
       case 'software': return <TabSoftware data={displayData} refreshing={refreshing} />;
       case 'rscd': return (
@@ -492,6 +503,7 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
           </div>
           <div className="lightbox-header-actions">
             {refreshing && <Loader2 className="spin" size={14} strokeWidth={1.5} aria-label="Refreshing" />}
+            <button type="button" className="btn btn-outline btn-sm" onClick={() => launchRemoteDesktop(vm._id, toast)}><Monitor size={14} strokeWidth={1.5} /> Remote Desktop</button>
             <button type="button" className="btn btn-outline btn-sm" onClick={() => tabQuery.reload(true)}><RefreshCw size={14} strokeWidth={1.5} /> Refresh</button>
             {uninstallJobId && (
               <button type="button" className="btn btn-outline btn-sm" onClick={() => nav(`/jobs/${uninstallJobId}`)}>View Job</button>

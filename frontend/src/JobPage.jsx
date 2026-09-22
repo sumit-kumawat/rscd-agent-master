@@ -131,6 +131,30 @@ export default function JobPage() {
   const activeSteps = Object.entries(vmSteps);
   const progress = job.progress || 0;
 
+  const retryFailed = async () => {
+    try {
+      const r = await api.post(`/deployments/${id}/retry-failed`, {});
+      const jobId = r.data?._id || r.job?._id;
+      toast('Retry job started', 'success');
+      if (jobId) window.location.href = `/jobs/${jobId}`;
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  };
+
+  const exportReport = () => {
+    const rows = job.endpointResults || [];
+    const header = ['Endpoint', 'IP', 'Agent', 'Version', 'Status', 'Step', 'DurationMs', 'Message'];
+    const lines = [header.join('\t'), ...rows.map((r) => [
+      r.name, r.ip, r.agentName, r.agentVersion, r.status, r.step, r.durationMs, (r.message || '').replace(/\t/g, ' '),
+    ].join('\t'))];
+    const blob = new Blob([lines.join('\n')], { type: 'text/tab-separated-values' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `job-${id}-report.tsv`;
+    a.click();
+  };
+
   const cancel = async () => {
     if (!confirm('Cancel this job?')) return;
     try {
@@ -150,6 +174,12 @@ export default function JobPage() {
         <Badge status={job.status} />
         <div className="toolbar-right">
           <button className="btn btn-outline" onClick={load}><RefreshCw size={14} /> Refresh</button>
+          {job.endpointResults?.some((r) => r.status === 'failed') && (
+            <button className="btn btn-outline btn-sm" onClick={retryFailed}>Retry failed</button>
+          )}
+          {job.endpointResults?.length > 0 && (
+            <button className="btn btn-outline btn-sm" onClick={exportReport}>Export report</button>
+          )}
           {running && <button className="btn btn-danger btn-sm" onClick={cancel}>Cancel</button>}
         </div>
       </div>

@@ -119,3 +119,13 @@
 **Software detection:** Centralized registry enumeration in `registrySoftware.js` (no `Win32_Product`). Sync persists snapshots + RSCD/CrowdStrike summary on each endpoint.
 
 **Environments:** `rnd` vs `prod` on endpoints and jobs; PROD requires `confirmedProd` on deployment APIs; header environment selector filters endpoint list.
+
+## Stack truth (v2.0.12 cleanup)
+
+**Decision:** This repository is **Express + MongoDB + Vite/React**, not Next.js/Prisma/pnpm workspaces. Production DB reset uses `npm run db:reset` in `backend/` (drops collections, **no seed**). Removed broken `src/seed.js` that referenced non-existent models.
+
+**Brand:** Primary `#F55A4D`, secondary `#052140` via CSS variables in `frontend/src/index.css`.
+
+**Remote Desktop:** Credentials never sent to the browser. `POST /api/vms/:id/remote-desktop/launch` audits the session; in-browser RDP uses **Apache Guacamole** when `GUACAMOLE_PUBLIC_URL` is set; otherwise native `rdp://` handler (OS may prompt — Guacamole required for zero-prompt HTML5).
+
+**Loading:** Lightbox tabs use inventory `initialData` + silent WMI refresh; offline hosts skip WMI on the API.
