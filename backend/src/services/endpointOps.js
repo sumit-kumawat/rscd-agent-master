@@ -157,22 +157,13 @@ async function fetchLocalUsers(vm) {
 
 async function fetchSoftware(vm) {
   const session = await connectOps(vm);
-  const script = [
-    '$ErrorActionPreference="SilentlyContinue"',
-    'foreach($u in "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall","HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall"){',
-    '  Get-ChildItem $u -EA 0|ForEach-Object{',
-    '    $p=Get-ItemProperty $_.PSPath -EA 0',
-    '    if($p.DisplayName){ Write-Output ("SW:" + $p.DisplayName + "|" + ($p.DisplayVersion -or "")) }',
-    '  }',
-    '}',
-  ].join('\n');
-  const out = await wmiPs(session, script, QUERY_TIMEOUT * 3);
-  const programs = out.split('\n').filter((l) => l.startsWith('SW:')).map((l) => {
-    const body = l.slice(3);
-    const [name, version] = body.split('|');
-    return { name: name?.trim(), version: version?.trim() || '' };
-  }).filter((p) => p.name);
-  return { programs };
+  const registrySoftware = require('./registrySoftware');
+  const { programs, agents, capturedAt } = await registrySoftware.fetchInstalledPrograms(session, QUERY_TIMEOUT * 3);
+  return {
+    programs: programs.map((p) => ({ name: p.displayName, version: p.version, publisher: p.publisher })),
+    agents,
+    capturedAt,
+  };
 }
 
 async function fetchRscd(vm, onLog = () => {}) {

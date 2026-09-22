@@ -44,8 +44,9 @@ router.post('/bulk-power', requireOperator, async (req, res) => {
 });
 
 router.get('/', async (req, res) => {
-  const { search, status, agentStatus } = req.query;
+  const { search, status, agentStatus, environment } = req.query;
   const query = { osType: 'windows' };
+  if (environment === 'rnd' || environment === 'prod') query.environment = environment;
   if (search) {
     const re = new RegExp(String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
     query.$or = [{ name: re }, { ip: re }, { fqdn: re }];
@@ -165,7 +166,10 @@ router.put('/:id', async (req, res) => {
     return res.status(400).json({ success: false, message: 'Agent is Removed — record cannot be edited' });
   }
 
-  const { name, ip, fqdn, version, installRoot, site, excluded, wmiDomain, wmiUsername, wmiPassword } = req.body;
+  const {
+    name, ip, fqdn, version, installRoot, site, excluded, environment,
+    wmiDomain, wmiUsername, wmiPassword,
+  } = req.body;
   const identity = normalizeVmIdentity(
     name != null ? name : vm.name,
     ip != null ? ip : vm.ip,
@@ -185,6 +189,7 @@ router.put('/:id', async (req, res) => {
     if (vm.excluded) vm.status = 'excluded';
     else if (vm.status === 'excluded') vm.status = 'offline';
   }
+  if (environment === 'rnd' || environment === 'prod') vm.environment = environment;
   if (wmiUsername != null || wmiDomain != null || wmiPassword != null) {
     const userInput = wmiUsername != null ? String(wmiUsername).trim() : vm.wmiUsername;
     if (!userInput) {

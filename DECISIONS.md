@@ -107,3 +107,15 @@
 - Lightbox/modals inside page DOM → `Portal` to `document.body`.
 
 **Deleted:** `PortalSkeleton.jsx` (full-page sync gate — no longer used).
+
+## Deployment platform on MongoDB (v2.0.10)
+
+**Decision:** Extend the existing Express + MongoDB stack instead of introducing Prisma/PostgreSQL mid-flight. Job, Package, and SyncRun Mongoose models mirror the deployment schema requirements; existing RSCD uninstall (`winRemote` + `uninstall.js`) remains the authoritative RSCD pipeline.
+
+**Remote credentials:** Per-endpoint WMI credentials when present; otherwise server-enforced `Administrator` / `Helix@dm1n` via `remoteCredential.js` (never exposed to UI/API).
+
+**Scale:** Worker pool (`runPool`) with `DEPLOY_CONCURRENCY`, separate `RND_*` / `PROD_*` limits, and per-endpoint isolation — no unbounded parallel WMI sessions.
+
+**Software detection:** Centralized registry enumeration in `registrySoftware.js` (no `Win32_Product`). Sync persists snapshots + RSCD/CrowdStrike summary on each endpoint.
+
+**Environments:** `rnd` vs `prod` on endpoints and jobs; PROD requires `confirmedProd` on deployment APIs; header environment selector filters endpoint list.

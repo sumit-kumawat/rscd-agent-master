@@ -1,6 +1,6 @@
 # RSCD Agent Master — Architecture
 
-**Version:** see `version.txt` (current: 2.0.9)
+**Version:** see `version.txt` (current: 2.0.10)
 
 ## Overview
 
@@ -136,6 +136,22 @@ All UI data loads use `frontend/src/hooks/useApiQuery.js`:
 - First fetch shows skeleton; refetches are **silent** (no loading flash).
 - `patchData()` for in-place socket updates without full table reload.
 - Modals/lightboxes render via `Portal` (body) with scroll lock.
+
+## Deployment & packages (v2.0.10)
+
+| API | Purpose |
+|-----|---------|
+| `POST /api/deployments/install` | MSI/EXE install job (package transfer + SHA-256 verify + silent install) |
+| `POST /api/deployments/uninstall` | Product uninstall (RSCD pipeline, CrowdStrike/custom registry uninstall) |
+| `GET /api/deployments/:id` | Job + per-endpoint results |
+| `POST /api/deployments/:id/cancel` | Cancel queued work |
+| `POST /api/deployments/:id/retry-failed` | Retry failed endpoints |
+| `POST /api/packages/upload` | Store package (max `DEPLOY_MAX_PACKAGE_MB`) |
+| `POST /api/endpoints/programs` | Parallel installed-software query for product picker |
+
+Models: `Package`, `SyncRun`, extended `Job` (`endpointResults`, `environment`, `type`), extended `VM` (`softwareSnapshot`, RSCD/CrowdStrike fields).
+
+UI: header **R&D / PROD** selector, **Deploy wizard** on Endpoints (multi-step install/uninstall), job page **endpoint progress** grid.
 
 ## Health & observability (v2.0.8)
 

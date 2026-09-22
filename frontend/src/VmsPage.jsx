@@ -3,8 +3,10 @@ import {
 } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
-  RefreshCw, Plus, Upload, Search, Trash2, Power,
+  RefreshCw, Plus, Upload, Search, Trash2, Power, Rocket,
 } from 'lucide-react';
+import { useEnvironment } from './context/EnvironmentContext';
+import DeployWizard from './components/DeployWizard';
 import api from './api';
 import { onSocket } from './socket';
 import { useToast } from './components/Toast';
@@ -130,8 +132,11 @@ const VmRow = memo(function VmRow({
       </td>
       <td className="col-host">{vm.name}</td>
       <td className="col-ip mono">{displayIp(vm.ip)}</td>
+      <td className="col-env">{String(vm.environment || 'rnd').toUpperCase()}</td>
       <td>{vm.osVersion || vm.os || 'Windows'}</td>
       <td className="col-status"><RscdAgentBadge vm={vm} /></td>
+      <td className="col-mono">{vm.rscdVersion || vm.version || '—'}</td>
+      <td className="col-status">{vm.crowdStrikeStatus === 'installed' ? `v${vm.crowdStrikeVersion || '?'}` : '—'}</td>
       <td className="col-status"><PowerBadge vm={vm} /></td>
     </tr>
   );
@@ -143,6 +148,8 @@ export default function VmsPage() {
   const headerFilter = useLayoutFilter();
   const { search } = useSearch();
   const { tick } = useRefresh();
+  const { environment } = useEnvironment();
+  const [deployOpen, setDeployOpen] = useState(false);
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [connFilter, setConnFilter] = useState('');
   const [selected, setSelected] = useState([]);
@@ -175,10 +182,11 @@ export default function VmsPage() {
       if (debouncedSearch) params.set('search', debouncedSearch);
       const statusFilter = connFilter || headerFilter;
       if (statusFilter) params.set('status', statusFilter);
+      if (environment) params.set('environment', environment);
       const v = await api.get(`/vms?${params}`, { timeout, signal });
       return v.data || [];
     },
-    [debouncedSearch, connFilter, headerFilter],
+    [debouncedSearch, connFilter, headerFilter, environment],
     { initialData: [] },
   );
 
@@ -301,13 +309,16 @@ export default function VmsPage() {
             <button className="btn btn-outline btn-sm" disabled={!bulkPowerAction || !bulkPassword} onClick={bulkPower}>
               <Power size={14} /> Apply ({selected.length})
             </button>
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => setDeployOpen(true)}>
+              <Rocket size={14} strokeWidth={1.5} /> Deploy wizard ({selected.length})
+            </button>
             <button
               type="button"
               className="btn btn-danger btn-sm"
               disabled={!canBulkUninstall}
               onClick={() => setBulkUninstallOpen(true)}
             >
-              <Trash2 size={14} strokeWidth={1.5} /> Uninstall RSCD ({selected.length})
+              <Trash2 size={14} strokeWidth={1.5} /> Quick RSCD uninstall
             </button>
           </>
         )}
@@ -331,18 +342,21 @@ export default function VmsPage() {
               </th>
               <th>Hostname</th>
               <th>IP</th>
+              <th>Env</th>
               <th>OS</th>
-              <th>RSCD Agents</th>
+              <th>RSCD</th>
+              <th>RSCD ver.</th>
+              <th>CrowdStrike</th>
               <th>Power</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6}><TableSkeleton rows={6} cols={5} /></td></tr>
+              <tr><td colSpan={9}><TableSkeleton rows={6} cols={7} /></td></tr>
             ) : isError ? (
-              <tr><td colSpan={6} className="empty">{error} — <button className="btn btn-outline btn-sm" onClick={() => reload(false)}>Retry</button></td></tr>
+              <tr><td colSpan={9} className="empty">{error} — <button className="btn btn-outline btn-sm" onClick={() => reload(false)}>Retry</button></td></tr>
             ) : vms.length === 0 ? (
-              <tr><td colSpan={6} className="empty">No endpoints — add or import hosts to get started</td></tr>
+              <tr><td colSpan={9} className="empty">No endpoints — add or import hosts to get started</td></tr>
             ) : vms.map((vm) => (
               <VmRow
                 key={vm._id}
@@ -375,6 +389,13 @@ export default function VmsPage() {
             loading={bulkUninstallLoading}
           />
         </Portal>
+      )}
+
+      {deployOpen && (
+        <DeployWizard
+          endpoints={selectedVms}
+          onClose={() => setDeployOpen(false)}
+        />
       )}
 
       {lightbox && (

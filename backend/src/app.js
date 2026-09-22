@@ -36,6 +36,8 @@ const dashboardRoutes = require('./api/routes/dashboard');
 const syncRoutes = require('./api/routes/sync');
 const endpointSync = require('./services/endpointSync');
 const endpointsRoutes = require('./api/routes/endpoints');
+const packagesRoutes = require('./api/routes/packages');
+const deploymentsRoutes = require('./api/routes/deployments');
 const mongoose = require('mongoose');
 
 const isProd = process.env.NODE_ENV === 'production';
@@ -114,6 +116,8 @@ app.use('/api/system', systemRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/sync', syncRoutes);
 app.use('/api/endpoints', endpointsRoutes);
+app.use('/api/packages', packagesRoutes);
+app.use('/api/deployments', deploymentsRoutes);
 
 const publicDir = path.join(__dirname, '../public');
 app.use(express.static(publicDir));

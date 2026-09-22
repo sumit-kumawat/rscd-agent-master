@@ -84,8 +84,18 @@ export default function JobPage() {
         },
       }));
     });
+    const off7 = onSocket('deployment:endpoint', (d) => {
+      if (String(d.jobId) !== id) return;
+      setJob((prev) => {
+        if (!prev?.endpointResults) return prev;
+        const endpointResults = prev.endpointResults.map((row) => (
+          String(row.endpointId) === String(d.endpointId) ? { ...row, ...d } : row
+        ));
+        return { ...prev, endpointResults };
+      });
+    });
 
-    return () => { off1(); off2(); off3(); off4(); off5(); off6(); };
+    return () => { off1(); off2(); off3(); off4(); off5(); off6(); off7(); };
   }, [id, toast]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [logs]);
@@ -179,6 +189,40 @@ export default function JobPage() {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {job.endpointResults?.length > 0 && (
+          <div className="deploy-results-wrap">
+            <div className="panel-section-title">Endpoint progress</div>
+            <table className="agent-table deploy-results-table">
+              <thead>
+                <tr>
+                  <th>Endpoint</th>
+                  <th>IP</th>
+                  <th>Agent</th>
+                  <th>Version</th>
+                  <th>Status</th>
+                  <th>Step</th>
+                  <th>Duration</th>
+                  <th>Message</th>
+                </tr>
+              </thead>
+              <tbody>
+                {job.endpointResults.map((row) => (
+                  <tr key={String(row.endpointId)} className="data-row">
+                    <td>{row.name}</td>
+                    <td className="mono">{row.ip || '—'}</td>
+                    <td>{row.agentName || '—'}</td>
+                    <td className="mono">{row.agentVersion || '—'}</td>
+                    <td><Badge status={row.status === 'done' ? 'completed' : row.status} /></td>
+                    <td>{row.step || '—'}</td>
+                    <td>{row.durationMs != null ? `${row.durationMs}ms` : '—'}</td>
+                    <td className="col-msg">{row.message || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
 

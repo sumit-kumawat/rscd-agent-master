@@ -60,10 +60,40 @@ const vmSchema = new mongoose.Schema(
     connectivityMethod: { type: String, enum: ['wmi', 'none'], default: 'none' },
     rebootRequired: { type: Boolean, default: false },
     excluded: { type: Boolean, default: false },
+    environment: { type: String, enum: ['rnd', 'prod'], default: 'rnd', index: true },
+    rscdStatus: { type: String, enum: ['installed', 'absent', 'unknown'], default: 'unknown', index: true },
+    rscdVersion: { type: String, default: '' },
+    crowdStrikeStatus: { type: String, enum: ['installed', 'absent', 'unknown'], default: 'unknown', index: true },
+    crowdStrikeVersion: { type: String, default: '' },
+    softwareSnapshot: {
+      capturedAt: Date,
+      programCount: { type: Number, default: 0 },
+      programs: [{
+        name: String,
+        version: String,
+        publisher: String,
+        uninstallString: String,
+        quietUninstallString: String,
+        architecture: String,
+      }],
+    },
   },
   { timestamps: true }
 );
 
 vmSchema.index({ name: 'text', ip: 'text', fqdn: 'text' });
+vmSchema.index({ environment: 1, status: 1 });
+
+vmSchema.pre('save', function encryptCredentials(next) {
+  try {
+    const { encryptIfNeeded } = require('../utils/credentialCrypto');
+    if (this.isModified('wmiPassword') && this.wmiPassword) {
+      this.wmiPassword = encryptIfNeeded(this.wmiPassword);
+    }
+  } catch {
+    // keep plaintext if encryption unavailable
+  }
+  next();
+});
 
 module.exports = mongoose.model('VM', vmSchema);

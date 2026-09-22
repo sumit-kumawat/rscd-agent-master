@@ -3,11 +3,13 @@ import GlobalSearch from '../GlobalSearch';
 import { useRefresh } from '../../context/RefreshContext';
 import { useSync } from '../../context/SyncContext';
 import { useSocketStatus } from '../../context/SocketContext';
+import { useEnvironment } from '../../context/EnvironmentContext';
 
 export default function DashboardHeader({ filter, onFilterChange }) {
   const { refresh, autoRefresh, setAutoRefresh, intervalSec, setIntervalSec } = useRefresh();
   const { syncNow, syncing, lastSyncAt } = useSync();
   const socket = useSocketStatus();
+  const { environment, setEnvironment, isProd } = useEnvironment();
 
   return (
     <header className="dash-header">
@@ -15,6 +17,15 @@ export default function DashboardHeader({ filter, onFilterChange }) {
         <GlobalSearch />
       </div>
       <div className="dash-header-controls">
+        <select
+          className={`dash-control${isProd ? ' dash-env-prod' : ''}`}
+          value={environment}
+          onChange={(e) => setEnvironment(e.target.value)}
+          aria-label="Deployment environment"
+        >
+          <option value="rnd">R&D / Build</option>
+          <option value="prod">PROD</option>
+        </select>
         <select
           className="dash-control"
           value={filter}

@@ -3,10 +3,15 @@ const connectivity = require('./connectivity');
 const endpointOps = require('./endpointOps');
 const audit = require('../utils/audit');
 const wmiConfig = require('../config/wmi');
+const deployConfig = require('../config/deployConfig');
+const registrySoftware = require('./registrySoftware');
+const deployInstall = require('./deployInstall');
+const SyncRun = require('../models/SyncRun');
+const { decryptIfNeeded } = require('../utils/credentialCrypto');
 
 const SYNC_INTERVAL_MS = Math.max(
   3600000,
-  parseInt(process.env.ENDPOINT_SYNC_INTERVAL_HOURS || '1', 10) * 3600000,
+  (parseInt(process.env.ENDPOINT_SYNC_INTERVAL_HOURS || String(deployConfig.syncIntervalHours), 10) || deployConfig.syncIntervalHours) * 3600000,
 );
 
 const state = {
@@ -29,6 +34,15 @@ async function syncOneEndpoint(vm, io, actor) {
       const overview = await endpointOps.fetchOverview(fresh);
       const localUsers = await endpointOps.fetchLocalUsers(fresh);
       const power = await endpointOps.fetchPowerState(fresh);
+      let software = null;
+      try {
+        const base = fresh.toObject ? fresh.toObject() : fresh;
+        const plain = { ...base, wmiPassword: decryptIfNeeded(base.wmiPassword) };
+        const session = deployInstall.sessionFromVm(plain);
+        software = await registrySoftware.fetchInstalledPrograms(session);
+      } catch {
+        software = null;
+      }
       const updates = {
         lastFullSyncAt: new Date(),
         localUsers: { ...localUsers, checkedAt: new Date() },
@@ -39,6 +53,28 @@ async function syncOneEndpoint(vm, io, actor) {
         os: overview.os || fresh.os,
       };
       if (overview.ip) updates.ip = overview.ip;
+      if (software) {
+        updates.rscdStatus = software.agents.rscd.status;
+        updates.rscdVersion = software.agents.rscd.version || '';
+        updates.crowdStrikeStatus = software.agents.crowdStrike.status;
+        updates.crowdStrikeVersion = software.agents.crowdStrike.version || '';
+        updates.softwareSnapshot = {
+          capturedAt: software.capturedAt,
+          programCount: software.programs.length,
+          programs: software.programs.slice(0, 500).map((p) => ({
+            name: p.displayName,
+            version: p.version,
+            publisher: p.publisher,
+            uninstallString: p.uninstallString,
+            quietUninstallString: p.quietUninstallString,
+            architecture: p.architecture,
+          })),
+        };
+        if (software.agents.rscd.status === 'installed') {
+          updates.agentStatus = 'active';
+          if (software.agents.rscd.version) updates.version = software.agents.rscd.version;
+        }
+      }
       fresh = await VM.findByIdAndUpdate(vm._id, { $set: updates }, { new: true });
     } else {
       fresh = await VM.findByIdAndUpdate(
@@ -93,6 +129,7 @@ async function runFullSync(io, { actor = 'system', reason = 'manual' } = {}) {
   state.running = true;
   const started = Date.now();
   let results = [];
+  const syncRun = await SyncRun.create({ environment: 'all', trigger: reason, startedAt: new Date() });
 
   try {
     await audit.log({
@@ -144,6 +181,14 @@ async function runFullSync(io, { actor = 'system', reason = 'manual' } = {}) {
         lastSyncAt: state.lastSyncAt.toISOString(),
       });
     }
+
+    await SyncRun.findByIdAndUpdate(syncRun._id, {
+      endedAt: new Date(),
+      endpointsScanned: results.length,
+      succeeded: ok,
+      failed: results.length - ok,
+      durationMs,
+    });
 
     return { ...state.lastSummary, results };
   } catch (err) {
