@@ -4,6 +4,46 @@ export function isAgentRemoved(vm) {
   return vm?.agentStatus === 'removed' || vm?.version === 'removed';
 }
 
+/** Readiness task list from Mongo inventory (before live WMI check). */
+export function buildReadinessFromVm(vm) {
+  if (!vm) return { tasks: [], allPass: false, stale: true };
+  if (vm.readiness?.tasks?.length) {
+    return {
+      tasks: vm.readiness.tasks,
+      allPass: vm.readiness.allPass,
+      checkedAt: vm.readiness.checkedAt,
+      stale: true,
+    };
+  }
+  const users = vm.localUsers?.users || [];
+  const expected = 3;
+  const usersOk = (vm.localUsers?.present ?? 0) >= expected
+    && users.filter((u) => u.present).length >= expected;
+  const rscdOk = isAgentRemoved(vm) || vm.rscdStatus === 'absent';
+  const vcOk = vm.vcRedist2015X64?.status === 'installed';
+  const tasks = [
+    {
+      id: 'rscd_uninstalled',
+      label: 'RSCD agent uninstalled',
+      status: rscdOk ? 'pass' : (vm.rscdStatus === 'installed' || vm.agentStatus === 'active' ? 'fail' : 'unknown'),
+      message: rscdOk ? 'Inventory indicates removed' : 'Verify on host',
+    },
+    {
+      id: 'local_users',
+      label: 'Provision local users',
+      status: usersOk ? 'pass' : (vm.localUsers?.checkedAt ? 'fail' : 'unknown'),
+      message: usersOk ? `${vm.localUsers.present}/${expected} users` : 'Not all users present',
+    },
+    {
+      id: 'vcredist_2015_x64',
+      label: 'Microsoft Visual C++ 2015 Redistributable (x64)',
+      status: vcOk ? 'pass' : (vm.vcRedist2015X64?.status === 'missing' ? 'fail' : 'unknown'),
+      message: vcOk ? 'Installed' : 'Verify on host',
+    },
+  ];
+  return { tasks, allPass: tasks.every((t) => t.status === 'pass'), stale: true };
+}
+
 /** Build display-ready tab payload from VM inventory (no WMI required). */
 export function buildCachedTabData(vm, tabId) {
   if (!vm) return null;

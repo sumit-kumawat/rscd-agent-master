@@ -162,4 +162,7 @@ async function installOnEndpoint(vm, jobId, pkgDoc, options, hooks) {
 module.exports = {
   installOnEndpoint,
   sessionFromVm,
+  transferPackage,
+  runInstaller,
+  wmiPs,
 };

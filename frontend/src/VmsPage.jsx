@@ -20,6 +20,7 @@ import { useSync } from './context/SyncContext';
 import {
   crowdStrikeActiveLabel, displayIp, displayOs, powerIsUp, rscdActiveLabel,
 } from './utils/assetsDisplay';
+import { isEndpointReady, readyLabel } from './utils/readiness';
 
 function patchVmList(list, payload) {
   if (!payload?.vmId || !Array.isArray(list)) return list;
@@ -112,6 +113,8 @@ function PowerDot({ up }) {
 const AssetRow = memo(function AssetRow({ vm, selected, isActive, onOpen, onToggleSelect }) {
   const rscd = rscdActiveLabel(vm);
   const cs = crowdStrikeActiveLabel(vm);
+  const ready = isEndpointReady(vm);
+  const readyText = readyLabel(vm);
   return (
     <tr
       className={`data-row ${isActive ? 'row-menu-active' : ''}`}
@@ -130,6 +133,7 @@ const AssetRow = memo(function AssetRow({ vm, selected, isActive, onOpen, onTogg
       <td>{displayOs(vm)}</td>
       <td className={rscd === 'Active' ? 'cell-active' : 'cell-inactive'}>{rscd}</td>
       <td className={cs === 'Active' ? 'cell-active' : 'cell-inactive'}>{cs}</td>
+      <td className={ready === true ? 'cell-active' : (ready === false ? 'cell-inactive' : 'cell-muted')}>{readyText}</td>
       <td className="col-power"><PowerDot up={powerIsUp(vm)} /></td>
     </tr>
   );
@@ -301,12 +305,13 @@ export default function VmsPage() {
               <th>Operating System</th>
               <th>RSCD</th>
               <th>CrowdStrike</th>
+              <th>Ready</th>
               <th>Power</th>
             </tr>
           </thead>
           <tbody>
             {list.length === 0 ? (
-              <tr><td colSpan={7} className="empty">No assets — import or add endpoints</td></tr>
+              <tr><td colSpan={8} className="empty">No assets — import or add endpoints</td></tr>
             ) : list.map((vm) => (
               <AssetRow
                 key={vm._id}

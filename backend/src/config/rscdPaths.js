@@ -48,11 +48,21 @@ function powershellRootsArray(paths = RSCD_KNOWN_PATHS) {
   return `@('${paths.map(psQuote).join("','")}')`;
 }
 
-/** PowerShell block: foreach known root, emit DIR: if Test-Path */
+/**
+ * PowerShell: walk candidate paths in order; emit the first DIR: that exists, then stop.
+ */
+function powershellFindFirstExistingDir(paths = RSCD_KNOWN_PATHS) {
+  return [
+    `$dirs=${powershellRootsArray(paths)}`,
+    'foreach($p in $dirs){',
+    '  if(Test-Path $p){ Write-Output ("DIR:" + $p); break }',
+    '}',
+  ].join('\n');
+}
+
+/** @deprecated Use powershellFindFirstExistingDir — kept as alias for callers */
 function powershellEmitExistingDirs(paths = RSCD_KNOWN_PATHS) {
-  return paths.map((p) => (
-    `if(Test-Path '${psQuote(p)}'){ Write-Output "DIR:${p}" }`
-  )).join('\n');
+  return powershellFindFirstExistingDir(paths);
 }
 
 /** Pick best install root from probe/detection (prefer RSCD\\ over NSH variants) */
@@ -76,5 +86,6 @@ module.exports = {
   getRscdCleanupRoots,
   powershellRootsArray,
   powershellEmitExistingDirs,
+  powershellFindFirstExistingDir,
   resolveInstallRoot,
 };

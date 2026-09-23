@@ -18,9 +18,9 @@ router.post('/full', (req, res) => {
     return res.json({ success: true, data: { alreadyRunning: true, ...status } });
   }
 
-  const reason = req.body?.reason || 'manual';
+  const reason = 'manual';
   setImmediate(() => {
-    endpointSync.runFullSync(io(req), { actor, reason }).catch((err) => {
+    endpointSync.runFullSync(io(req), { actor, reason, broadcastUi: true }).catch((err) => {
       logger.error(`Background sync failed: ${err.message}`);
     });
   });

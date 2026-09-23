@@ -1,12 +1,15 @@
 import { io } from 'socket.io-client';
+import { getSocketOrigin, isCrossOriginApi } from './config/connection';
 
 let socket;
 
 export function getSocket() {
   if (!socket) {
-    socket = io({
+    const origin = getSocketOrigin();
+    socket = io(origin || undefined, {
       path: '/socket.io/',
       transports: ['websocket', 'polling'],
+      withCredentials: isCrossOriginApi(),
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,

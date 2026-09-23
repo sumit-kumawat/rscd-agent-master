@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { LayoutDashboard, Server, Briefcase, ScrollText, ChevronLeft, ChevronRight } from 'lucide-react';
 import Logo from '../../Logo';
+import { getHealthUrl } from '../../config/connection';
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, end: true },
@@ -20,7 +21,7 @@ export default function Sidebar({ collapsed, onToggle }) {
   const [version, setVersion] = useState('');
 
   useEffect(() => {
-    fetch('/health').then((r) => r.json()).then((r) => setVersion(r.version || '')).catch(() => {});
+    fetch(getHealthUrl()).then((r) => r.json()).then((r) => setVersion(r.version || '')).catch(() => {});
   }, []);
 
   return (

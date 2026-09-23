@@ -153,3 +153,17 @@
 3. `Administrator` — `ADMIN_PASSWORD` (default `Helix@dm1n`), then `ADMIN_PASSWORD_ALT` (`bmcAdm1n`), then `ADMIN_PASSWORD_ALT2` (`#D3Pl0y_M3nT$`)
 
 Per-endpoint WMI fields in MongoDB override the chain when username+password are stored. `agentProbe.connectWmi` tries each credential until one succeeds.
+
+## Full sync vs page load vs connectivity (v2.0.26)
+
+**Decision:** Full inventory sync is **not** tied to browser refresh. Three triggers only:
+
+1. **Initial** — once per environment when Windows endpoints exist but lack `lastFullSyncAt` (or `system_state.initial_sync_done` is false). Shows progress in the UI (`reason: initial`).
+2. **Scheduled** — every `SYNC_INTERVAL_HOURS` (default 3) in the backend only; **no** `sync:*` UI events (`broadcastUi: false`).
+3. **Manual** — header **Sync now** (`reason: manual`).
+
+**Persistence:** `system_state` (`initialSyncDone`, `lastSyncAt`) plus `SyncRun` audit rows. Page load reads MongoDB via normal list/dashboard APIs — no `POST /sync/full` on mount.
+
+**Connectivity:** Lightweight WMI monitor on `CONNECTIVITY_CHECK_INTERVAL_SECONDS` (default 30) is separate from full sync. Background agent inventory is capped (`BACKGROUND_INVENTORY_CONCURRENCY`, default 2) and skipped when `lastFullSyncAt` is newer than `BACKGROUND_INVENTORY_MIN_AGE_MS` (default 3h).
+
+**Login:** `POST /api/system/login` no longer queues fleet readiness or provisioning unless `PROVISION_ON_LOGIN=true`. No session boot call from the SPA.

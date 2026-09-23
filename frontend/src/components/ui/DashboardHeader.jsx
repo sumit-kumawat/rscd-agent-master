@@ -5,7 +5,14 @@ import { useSync } from '../../context/SyncContext';
 
 export default function DashboardHeader({ filter, onFilterChange }) {
   const { refresh, intervalSec, setIntervalSec } = useRefresh();
-  const { syncNow, syncing, lastSyncAt } = useSync();
+  const { syncNow, syncing, lastSyncAt, syncProgress } = useSync();
+
+  let syncLabel = 'Sync now';
+  if (syncing) {
+    syncLabel = syncProgress?.total
+      ? `Syncing ${syncProgress.completed}/${syncProgress.total}…`
+      : 'Syncing…';
+  }
 
   return (
     <header className="dash-header">
@@ -31,7 +38,7 @@ export default function DashboardHeader({ filter, onFilterChange }) {
           title={lastSyncAt ? `Last sync: ${new Date(lastSyncAt).toLocaleString()}` : 'Sync all endpoints now'}
         >
           <CloudDownload size={16} strokeWidth={1.5} />
-          <span>{syncing ? 'Syncing…' : 'Sync now'}</span>
+          <span>{syncLabel}</span>
         </button>
         <select
           className="dash-control"

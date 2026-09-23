@@ -287,12 +287,13 @@ class WinRemoteService {
   /** Step 5 — Remove installation directories. */
   async _cleanupDirectories(session, roots, onLog) {
     onLog('Step 5 — Removing installation directories…');
-    const unique = [...new Set(roots.filter(Boolean))];
-    for (const root of unique) {
+    const ordered = [...new Set(roots.filter(Boolean))];
+    const fallback = ordered.length ? ordered : DEFAULT_CLEANUP_ROOTS;
+    for (const root of fallback) {
       try {
         const verify = await this._wmiPs(session, `if(Test-Path '${root.replace(/'/g, "''")}'){Write-Output 'EXISTS'}else{Write-Output 'GONE'}`);
         if (!/EXISTS/i.test(verify.stdout)) {
-          onLog(`Directory already absent: ${root}`);
+          onLog(`Directory not present, trying next: ${root}`);
           continue;
         }
         await this._wmiCmd(session, `if exist "${root}" rmdir /s /q "${root}"`, {
@@ -303,9 +304,9 @@ class WinRemoteService {
         const after = await this._wmiPs(session, `if(Test-Path '${root.replace(/'/g, "''")}'){Write-Output 'EXISTS'}else{Write-Output 'GONE'}`);
         if (/GONE/i.test(after.stdout)) {
           onLog(`Directory removed: ${root}`, 'success');
-        } else {
-          onLog(`Directory still present after cleanup: ${root}`, 'warning');
+          return;
         }
+        onLog(`Directory still present after cleanup: ${root}`, 'warning');
       } catch (err) {
         onLog(`Directory cleanup failed for ${root}: ${err.message}`, 'warning');
       }
@@ -316,7 +317,7 @@ class WinRemoteService {
     const script = [
       '$ErrorActionPreference="SilentlyContinue"',
       `$roots=@('${roots.map((r) => r.replace(/'/g, "''")).join("','")}')`,
-      'foreach($r in $roots){ if(Test-Path $r){ Write-Output "PARTIAL:directory:$r"; exit } }',
+      'foreach($r in $roots){ if(Test-Path $r){ Write-Output "PARTIAL:directory:$r"; break } }',
       'foreach($u in "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall","HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall"){',
       '  Get-ChildItem $u -EA 0|ForEach-Object{',
       '    $d=(Get-ItemProperty $_.PSPath -EA 0).DisplayName',
@@ -425,11 +426,10 @@ class WinRemoteService {
     }
 
     const cleanupRoots = [...new Set([
-      ...(agent.installRoots || []),
       agent.installRoot,
-      ...DEFAULT_CLEANUP_ROOTS,
+      ...(agent.installRoots || []),
     ].filter(Boolean))];
-    agent.installRoots = cleanupRoots;
+    agent.installRoots = cleanupRoots.length ? cleanupRoots : [agent.installRoot || RSCD_ROOT];
 
     onPhase('stopping');
     onStep(2, TOTAL_STEPS, 'Stop service');

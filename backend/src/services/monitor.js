@@ -41,7 +41,10 @@ class MonitorService {
   start(io, options = {}) {
     if (this.timer) return;
     this.io = io;
-    const sec = parseInt(process.env.MONITOR_INTERVAL_SEC || '30', 10);
+    const sec = parseInt(
+      process.env.CONNECTIVITY_CHECK_INTERVAL_SECONDS || process.env.MONITOR_INTERVAL_SEC || '30',
+      10,
+    );
     const backoff = wmiConfig.monitorProbeBackoffSec;
     logger.info(
       `Monitor started (every ${sec}s, concurrency ${process.env.MONITOR_CONCURRENCY || 30}, `

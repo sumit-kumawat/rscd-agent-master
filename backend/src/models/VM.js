@@ -65,6 +65,20 @@ const vmSchema = new mongoose.Schema(
     rscdVersion: { type: String, default: '' },
     crowdStrikeStatus: { type: String, enum: ['installed', 'absent', 'unknown'], default: 'unknown', index: true },
     crowdStrikeVersion: { type: String, default: '' },
+    vcRedist2015X64: {
+      status: { type: String, enum: ['installed', 'missing', 'failed', 'unknown'], default: 'unknown' },
+      version: { type: String, default: '' },
+      checkedAt: { type: Date },
+    },
+    readiness: {
+      checkedAt: { type: Date },
+      allPass: { type: Boolean, default: false },
+      tasks: [{
+        id: String,
+        status: { type: String, enum: ['pass', 'fail', 'unknown'] },
+        message: String,
+      }],
+    },
     softwareSnapshot: {
       capturedAt: Date,
       programCount: { type: Number, default: 0 },

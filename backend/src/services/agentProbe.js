@@ -45,7 +45,7 @@ const PROBE_SCRIPT = [
   '$installed=$false; $version="unknown"; $installRoot=""',
   'if(Get-Service -Name RSCD -EA 0){ $installed=$true }',
   `$roots=${powershellRootsArray(CANDIDATE_ROOTS)}`,
-  'foreach($r in $roots){ if(Test-Path $r){ if(-not $installRoot -or $r -match "RSCD$"){ $installRoot=$r }; $vf=Join-Path $r "VERSION"; if(Test-Path $vf){ $v=(Get-Content $vf -Raw -EA 0).Trim(); if($v){ $version=$v; $installed=$true } } elseif(-not $installed){ $installed=$true } } }',
+  'foreach($r in $roots){ if(Test-Path $r){ $installRoot=$r; $vf=Join-Path $r "VERSION"; if(Test-Path $vf){ $v=(Get-Content $vf -Raw -EA 0).Trim(); if($v){ $version=$v } }; $installed=$true; break } }',
   'foreach($k in "HKLM:\\SOFTWARE\\BladeLogic\\RSCD Agent","HKLM:\\SOFTWARE\\WOW6432Node\\BladeLogic\\RSCD Agent"){ $p=Get-ItemProperty $k -EA 0; if($p){ $installed=$true; if($p.InstallDir){ $installRoot=$p.InstallDir } } }',
   'if($installed){ Write-Output "AGENT:active"; Write-Output ("VERSION:" + $version); Write-Output ("INSTALLROOT:" + $installRoot) } else { Write-Output "AGENT:removed" }',
 ].join('\n');
@@ -423,9 +423,7 @@ class AgentProbeService {
         ...data,
         installed: data.agentStatus === 'active',
         codes,
-        installRoots: data.installRoot
-          ? [...new Set([data.installRoot, ...CANDIDATE_ROOTS])]
-          : CANDIDATE_ROOTS,
+        installRoots: data.installRoot ? [data.installRoot] : [],
       };
     } catch (err) {
       logger.debug(`probeOnSession error: ${err.message}`);
@@ -433,9 +431,9 @@ class AgentProbeService {
         agentStatus: 'unknown',
         installed: false,
         version: 'unknown',
-        installRoot: CANDIDATE_ROOTS[0] || RSCD_ROOT,
+        installRoot: '',
         codes: [],
-        installRoots: CANDIDATE_ROOTS,
+        installRoots: [],
         probeError: err.message,
       };
     }

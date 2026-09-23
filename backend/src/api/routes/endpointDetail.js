@@ -2,6 +2,7 @@ const express = require('express');
 const VM = require('../../models/VM');
 const activityLog = require('../../services/activityLog');
 const endpointOps = require('../../services/endpointOps');
+const endpointReadiness = require('../../services/endpointReadiness');
 const { inventoryForTab, isOnline } = require('../../services/endpointInventory');
 const audit = require('../../utils/audit');
 const wmiConfig = require('../../config/wmi');
@@ -121,6 +122,36 @@ router.get('/detail/:tab', async (req, res) => {
         warning: audit.maskSecrets(err.message),
       });
     }
+    return res.status(500).json({ success: false, message: audit.maskSecrets(err.message) });
+  }
+});
+
+router.get('/readiness', async (req, res) => {
+  const vm = await loadVm(req.params.id);
+  if (!vm) return res.status(404).json({ success: false, message: 'Not found' });
+  const live = req.query.live !== 'false';
+  try {
+    const data = live
+      ? await endpointReadiness.assessEndpoint(vm, { live: true })
+      : endpointReadiness.buildTaskList(vm);
+    return res.json({ success: true, data });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: audit.maskSecrets(err.message) });
+  }
+});
+
+router.post('/readiness/ensure', async (req, res) => {
+  const vm = await VM.findById(req.params.id).select('+wmiPassword');
+  if (!vm) return res.status(404).json({ success: false, message: 'Not found' });
+  const remediateUsers = req.body?.users !== false;
+  const remediateVc = req.body?.vcredist !== false;
+  try {
+    const result = await endpointReadiness.remediateEndpoint(vm, {
+      users: remediateUsers,
+      vcredist: remediateVc,
+    });
+    return res.json({ success: true, result });
+  } catch (err) {
     return res.status(500).json({ success: false, message: audit.maskSecrets(err.message) });
   }
 });

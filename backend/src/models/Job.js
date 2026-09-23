@@ -27,7 +27,7 @@ const jobSchema = new mongoose.Schema(
     name: { type: String, required: true },
     type: {
       type: String,
-      enum: ['uninstall_rscd', 'uninstall_program', 'install_package', 'provision', 'legacy_uninstall'],
+      enum: ['uninstall_rscd', 'uninstall_program', 'install_package', 'provision', 'vcredist_2015', 'readiness', 'legacy_uninstall'],
       default: 'legacy_uninstall',
       index: true,
     },

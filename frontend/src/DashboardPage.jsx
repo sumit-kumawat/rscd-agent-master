@@ -1,17 +1,10 @@
 import { useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import api from './api';
 import { useRefresh } from './context/RefreshContext';
 import { useSync } from './context/SyncContext';
 import { useLayoutFilter } from './Layout';
 import { useLiveData } from './hooks/useLiveData';
-import TrendChartCard from './components/ui/TrendChartCard';
-import DonutCard from './components/ui/DonutCard';
-import ListCard from './components/ui/ListCard';
-import MiniProgressCard from './components/ui/MiniProgressCard';
-import MiniBarChartCard from './components/ui/MiniBarChartCard';
-import ActivityTrackCard from './components/ui/ActivityTrackCard';
-import { Link } from 'react-router-dom';
 
 function DashboardEmptyBanner() {
   return (
@@ -24,25 +17,22 @@ function DashboardEmptyBanner() {
   );
 }
 
-function KpiStrip({ kpis, lastSyncAt }) {
-  const items = kpis || [];
+function CountSection({ title, counts }) {
+  if (!counts?.length) return null;
   return (
-    <section className="dash-kpi-strip" aria-label="Fleet KPIs">
-      {items.map((k) => (
-        <div key={k.key} className="dash-kpi-tile">
-          <span className="dash-kpi-label">{k.label}</span>
-          <span className={`dash-kpi-value ${k.tone || ''}`}>{k.value}</span>
-          {k.hint ? <span className="dash-kpi-hint">{k.hint}</span> : null}
-        </div>
-      ))}
-      {lastSyncAt ? (
-        <div className="dash-kpi-tile dash-kpi-sync">
-          <span className="dash-kpi-label">Last full sync</span>
-          <span className="dash-kpi-value dash-kpi-value-sm">
-            {new Date(lastSyncAt).toLocaleString()}
-          </span>
-        </div>
-      ) : null}
+    <section className="dash-count-section" aria-label={title}>
+      <h2 className="dash-count-section-title">{title}</h2>
+      <div
+        className="dash-kpi-strip dash-kpi-strip-fill"
+        style={{ '--kpi-cols': counts.length }}
+      >
+        {counts.map((k) => (
+          <div key={k.key} className="dash-kpi-tile">
+            <span className="dash-kpi-label">{k.label}</span>
+            <span className={`dash-kpi-value ${k.tone || ''}`}>{k.value}</span>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
@@ -50,8 +40,7 @@ function KpiStrip({ kpis, lastSyncAt }) {
 export default function DashboardPage() {
   const filter = useLayoutFilter();
   const { tick } = useRefresh();
-  const { syncedTick, lastSyncAt } = useSync();
-  const nav = useNavigate();
+  const { syncedTick } = useSync();
 
   const q = useMemo(
     () => (filter ? `?status=${encodeURIComponent(filter)}` : ''),
@@ -74,86 +63,52 @@ export default function DashboardPage() {
     [q, tick],
   );
 
-  const kpis = useMemo(() => {
+  const endpointCounts = useMemo(() => {
     const s = synced?.kpis;
     const l = live?.kpis;
     if (!s && !l) return [];
+    const total = s?.total ?? '—';
+    const online = l?.online ?? s?.online ?? '—';
+    const offline = l?.offline ?? s?.offline ?? '—';
+    const unknown = l?.unknown ?? (typeof total === 'number' && typeof online === 'number' && typeof offline === 'number'
+      ? Math.max(0, total - online - offline)
+      : '—');
     return [
-      { key: 'total', label: 'Endpoints', value: s?.total ?? '—', hint: 'Windows fleet' },
-      { key: 'online', label: 'Online (live)', value: l?.online ?? '—', tone: 'stat-success', hint: 'WMI reachable' },
-      { key: 'offline', label: 'Offline', value: l?.offline ?? '—', tone: 'stat-danger' },
-      { key: 'rscd', label: 'RSCD active', value: s?.rscdActive ?? '—', tone: 'stat-success', hint: 'Installed agents' },
-      { key: 'jobs', label: 'Jobs running', value: l?.jobsRunning ?? '—', tone: l?.jobsRunning > 0 ? 'stat-warn' : '' },
-      { key: 'power', label: 'Power on', value: l?.powerOn ?? '—', hint: l?.powerOff != null ? `${l.powerOff} off` : undefined },
+      { key: 'total', label: 'Total', value: total },
+      { key: 'online', label: 'Online', value: online, tone: 'stat-success' },
+      { key: 'offline', label: 'Offline', value: offline, tone: 'stat-danger' },
+      { key: 'unknown', label: 'Other', value: unknown },
+      { key: 'rscd', label: 'RSCD installed', value: s?.rscdActive ?? '—' },
+      { key: 'cs', label: 'CrowdStrike installed', value: s?.crowdStrikeInstalled ?? '—' },
     ];
   }, [synced, live]);
 
-  const syncMeta = synced?.meta?.lastSyncAt || lastSyncAt;
+  const jobCounts = useMemo(() => {
+    const j = live?.kpis;
+    if (!j) return [];
+    return [
+      { key: 'running', label: 'Running', value: j.jobsRunning ?? 0, tone: j.jobsRunning > 0 ? 'stat-warn' : '' },
+      { key: 'pending', label: 'Queued', value: j.jobsPending ?? 0 },
+      { key: 'completed', label: 'Completed', value: j.jobsCompleted ?? 0 },
+      { key: 'failed', label: 'Failed', value: j.jobsFailed ?? 0, tone: j.jobsFailed > 0 ? 'stat-danger' : '' },
+      { key: 'cancelled', label: 'Cancelled', value: j.jobsCancelled ?? 0 },
+    ];
+  }, [live]);
+
   const fleetTotal = synced?.kpis?.total ?? synced?.stats?.totalEndpoints?.value;
   const showEmptyFleet = fleetTotal === 0;
+  const lastSync = synced?.meta?.lastSyncAt;
 
   return (
-    <div className="page dashboard-page">
+    <div className="page dashboard-page dashboard-page-minimal">
       {showEmptyFleet && <DashboardEmptyBanner />}
-      <KpiStrip kpis={kpis} lastSyncAt={syncMeta} />
-
-      <div className="dashboard-grid-v3">
-        <div className="dashboard-grid-main">
-          <TrendChartCard
-            title="Connectivity trends"
-            subtitle="7-day online & sync activity"
-            data={synced?.trend}
-            legend={synced?.trend?.legend}
-            loading={false}
-            empty={!synced?.trend?.series?.length}
-          />
-          <DonutCard
-            title="Fleet status"
-            subtitle="Last sync snapshot"
-            segments={synced?.donut?.segments}
-            centerPercent={synced?.donut?.centerPercent ?? 0}
-            caption={synced?.donut?.caption}
-            legend={synced?.donut?.legend}
-            loading={false}
-            empty={!synced?.donut?.segments?.length}
-          />
-        </div>
-
-        <div className="dashboard-grid-side">
-          <ListCard
-            title="Needs attention"
-            subtitle="Offline or incomplete local users"
-            items={live?.list?.items}
-            loading={false}
-            empty={!live?.list?.items?.length}
-            onItemClick={(item) => nav('/vms', { state: { openVmId: item.id } })}
-          />
-          <MiniBarChartCard
-            title="Job activity"
-            subtitle={live?.bars?.label || 'Jobs created'}
-            items={live?.bars?.items}
-            loading={false}
-            empty={!live?.bars?.items?.length}
-          />
-          <MiniProgressCard
-            title="Fleet progress"
-            subtitle="Compliance & completion"
-            items={synced?.progress?.items}
-            loading={false}
-            empty={!synced?.progress?.items?.length}
-          />
-        </div>
-
-        <div className="dashboard-grid-track">
-          <ActivityTrackCard
-            title="Activity track"
-            subtitle="Live feed — monitor, sync, and jobs (24h)"
-            items={live?.track?.items}
-            loading={false}
-            empty={!live?.track?.items?.length}
-          />
-        </div>
-      </div>
+      <CountSection title="Endpoints" counts={endpointCounts} />
+      <CountSection title="Jobs" counts={jobCounts} />
+      {lastSync && (
+        <p className="dashboard-meta-line" role="status">
+          Last inventory sync: {new Date(lastSync).toLocaleString()}
+        </p>
+      )}
     </div>
   );
 }

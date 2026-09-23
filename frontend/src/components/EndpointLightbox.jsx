@@ -9,7 +9,7 @@ import api from '../api';
 import { onSocket } from '../socket';
 import { useToast } from './Toast';
 import { resolvePowerState } from '../utils/endpointDisplay';
-import { buildCachedTabData, mergeTabData } from '../utils/lightboxCache';
+import { buildCachedTabData, mergeTabData, buildReadinessFromVm } from '../utils/lightboxCache';
 import { useApiQuery } from '../hooks/useApiQuery';
 import { launchRemoteDesktop } from '../utils/launchRemoteDesktop';
 import { TabErrorBoundary } from './ErrorBoundary';
@@ -80,9 +80,72 @@ function Empty({ icon: Icon = AlertCircle, text }) {
   );
 }
 
-function TabOverview({ data }) {
+function ReadinessTaskList({ readiness, loading, onRefresh, onRemediate, remediatePending }) {
+  const tasks = readiness?.tasks || [];
+  if (!tasks.length && !loading) {
+    return (
+      <div className="lb-readiness">
+        <div className="lb-detail-title"><ClipboardList size={16} strokeWidth={1.5} /> Pre-deploy task list</div>
+        <div className="lb-detail-muted">No readiness data — refresh to run checks.</div>
+      </div>
+    );
+  }
+  const statusIcon = (status) => {
+    if (status === 'pass') return <CheckCircle2 size={16} className="lb-task-pass" strokeWidth={1.5} />;
+    if (status === 'fail') return <XCircle size={16} className="lb-task-fail" strokeWidth={1.5} />;
+    return <AlertCircle size={16} className="lb-task-unknown" strokeWidth={1.5} />;
+  };
+  return (
+    <div className="lb-readiness">
+      <div className="lb-readiness-head">
+        <div className="lb-detail-title"><ClipboardList size={16} strokeWidth={1.5} /> Pre-deploy task list</div>
+        <div className="lb-readiness-actions">
+          {loading && <Loader2 className="spin" size={14} strokeWidth={1.5} />}
+          <button type="button" className="btn btn-outline btn-sm" onClick={onRefresh} disabled={loading}>
+            <RefreshCw size={14} strokeWidth={1.5} /> Re-check
+          </button>
+          <button type="button" className="btn btn-primary btn-sm" onClick={onRemediate} disabled={remediatePending || loading}>
+            Fix users &amp; VC++
+          </button>
+        </div>
+      </div>
+      {readiness?.allPass && <div className="lb-readiness-banner pass">All prerequisites met</div>}
+      {!readiness?.allPass && !loading && tasks.some((t) => t.status === 'fail') && (
+        <div className="lb-readiness-banner fail">One or more tasks need attention</div>
+      )}
+      <ul className="lb-task-list">
+        {tasks.map((t) => (
+          <li key={t.id} className={`lb-task-item lb-task-${t.status || 'unknown'}`}>
+            {statusIcon(t.status)}
+            <div className="lb-task-body">
+              <div className="lb-task-label">{t.label}</div>
+              {t.description && <div className="lb-task-desc">{t.description}</div>}
+              {t.message && <div className="lb-task-msg">{t.message}</div>}
+            </div>
+          </li>
+        ))}
+      </ul>
+      {readiness?.checkedAt && (
+        <div className="lb-detail-muted lb-readiness-foot">
+          Last checked {new Date(readiness.checkedAt).toLocaleString()}
+          {readiness.stale ? ' (inventory snapshot — use Re-check when online)' : ''}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TabOverview({ data, readiness, readinessLoading, onReadinessRefresh, onReadinessRemediate, remediatePending }) {
   if (!data) return <Empty text="No overview data available." />;
   return (
+    <div className="lb-overview">
+      <ReadinessTaskList
+        readiness={readiness}
+        loading={readinessLoading}
+        onRefresh={onReadinessRefresh}
+        onRemediate={onReadinessRemediate}
+        remediatePending={remediatePending}
+      />
     <div className="lb-card-grid">
       <InfoCard icon={Server} label="Hostname" value={data.hostname} />
       <InfoCard icon={Wifi} label="IP Address" value={data.ip || '—'} />
@@ -95,6 +158,7 @@ function TabOverview({ data }) {
       <InfoCard icon={CircleDot} label="Connectivity" value={<StatusPill status={data.connectivity || data.health} />} />
       <InfoCard icon={Power} label="Power State" value={<StatusPill status={data.powerState} />} />
       <InfoCard icon={Shield} label="Agent Version" value={data.agentVersion || '—'} />
+    </div>
     </div>
   );
 }
@@ -333,6 +397,7 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
   const [uninstallJobId, setUninstallJobId] = useState(null);
   const [uninstallProgress, setUninstallProgress] = useState(0);
   const [rdpSession, setRdpSession] = useState(null);
+  const [remediatePending, setRemediatePending] = useState(false);
   const dialogRef = useRef(null);
   const toast = useToast();
   const nav = useNavigate();
@@ -352,6 +417,36 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
       initialData: cachedData,
     },
   );
+
+  const readinessInitial = useMemo(() => buildReadinessFromVm(vm), [vm]);
+  const readinessQuery = useApiQuery(
+    async ({ timeout, signal }) => {
+      const r = await api.get(`/vms/${vm._id}/readiness`, { timeout, signal });
+      return r.data;
+    },
+    [vm?._id],
+    {
+      timeout: 120000,
+      retries: 0,
+      enabled: !!vm?._id && tab === 'overview',
+      initialData: readinessInitial,
+    },
+  );
+
+  const handleReadinessRefresh = () => readinessQuery.reload(true);
+  const handleReadinessRemediate = async () => {
+    setRemediatePending(true);
+    try {
+      await api.post(`/vms/${vm._id}/readiness/ensure`, { users: true, vcredist: true });
+      toast('Remediating users and VC++ 2015 x64…', 'info');
+      await readinessQuery.reload(true);
+      onVmUpdated?.();
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setRemediatePending(false);
+    }
+  };
 
   useEffect(() => {
     document.body.classList.add('modal-open');
@@ -463,7 +558,16 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
     }
 
     switch (tab) {
-      case 'overview': return <TabOverview data={displayData} />;
+      case 'overview': return (
+        <TabOverview
+          data={displayData}
+          readiness={readinessQuery.data}
+          readinessLoading={readinessQuery.isLoading}
+          onReadinessRefresh={handleReadinessRefresh}
+          onReadinessRemediate={handleReadinessRemediate}
+          remediatePending={remediatePending}
+        />
+      );
       case 'system': return <TabSystem data={displayData} refreshing={refreshing} stale={displayData?.source === 'inventory' || displayData?.offline} />;
       case 'local-users': return <TabLocalUsers data={displayData} refreshing={refreshing} />;
       case 'software': return <TabSoftware data={displayData} refreshing={refreshing} />;
@@ -514,7 +618,16 @@ export default function EndpointLightbox({ vm, initialTab = 'overview', onClose,
             >
               <Monitor size={14} strokeWidth={1.5} /> Remote Desktop
             </button>
-            <button type="button" className="btn btn-outline btn-sm" onClick={() => tabQuery.reload(true)}><RefreshCw size={14} strokeWidth={1.5} /> Refresh</button>
+            <button
+              type="button"
+              className="btn btn-outline btn-sm"
+              onClick={() => {
+                tabQuery.reload(true);
+                if (tab === 'overview') readinessQuery.reload(true);
+              }}
+            >
+              <RefreshCw size={14} strokeWidth={1.5} /> Refresh
+            </button>
             {uninstallJobId && (
               <button type="button" className="btn btn-outline btn-sm" onClick={() => nav(`/jobs/${uninstallJobId}`)}>View Job</button>
             )}

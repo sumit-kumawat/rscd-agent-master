@@ -6,6 +6,16 @@ const { getMonitorableVmQuery } = require('../utils/agentStatus');
 const wmiConfig = require('../config/wmi');
 
 const inventoryInFlight = new Set();
+const inventoryPending = [];
+let inventoryWorkers = 0;
+const INVENTORY_MAX_CONCURRENT = Math.max(
+  1,
+  parseInt(process.env.BACKGROUND_INVENTORY_CONCURRENCY || '2', 10),
+);
+const INVENTORY_MIN_AGE_MS = Math.max(
+  3600000,
+  parseInt(process.env.BACKGROUND_INVENTORY_MIN_AGE_MS || String(3 * 3600000), 10),
+);
 
 function emitVmStatus(io, vm, result) {
   if (!io || !vm) return;
@@ -31,6 +41,10 @@ function needsBackgroundInventory(vm) {
   if (!wmiConfig.backgroundInventory) return false;
   if (vm?.excluded || vm?.status === 'excluded') return false;
   if (vm?.agentStatus === 'removed' || vm?.version === 'removed') return false;
+  if (vm?.lastFullSyncAt) {
+    const age = Date.now() - new Date(vm.lastFullSyncAt).getTime();
+    if (age < INVENTORY_MIN_AGE_MS) return false;
+  }
   const ver = String(vm?.version || '').trim();
   return !ver || ver === 'unknown';
 }
@@ -43,6 +57,7 @@ async function checkVmRecord(vm, io, options = {}) {
   if (!doc) return null;
 
   const { result, vm: updated } = await connectivity.checkAndUpdate(doc, { lightweight });
+  if (!updated) return null;
   emitVmStatus(io, updated, result);
 
   if (
@@ -57,25 +72,40 @@ async function checkVmRecord(vm, io, options = {}) {
   return updated;
 }
 
-/** Deferred full agent inventory — does not block online detection. */
+async function runBackgroundInventoryJob(vmId, io) {
+  const id = String(vmId);
+  try {
+    const doc = await VM.findById(id).select('+wmiPassword');
+    if (!doc || !needsBackgroundInventory(doc)) return;
+    logger.debug(`Background agent inventory: ${doc.name}`);
+    const { result, vm: updated } = await connectivity.checkAndUpdate(doc, { lightweight: false });
+    if (!updated) return;
+    emitVmStatus(io, updated, result);
+  } catch (err) {
+    logger.debug(`Background inventory ${id}: ${err.message}`);
+  } finally {
+    inventoryInFlight.delete(id);
+    inventoryWorkers = Math.max(0, inventoryWorkers - 1);
+    drainBackgroundInventory(io);
+  }
+}
+
+function drainBackgroundInventory(io) {
+  while (inventoryWorkers < INVENTORY_MAX_CONCURRENT && inventoryPending.length) {
+    const nextId = inventoryPending.shift();
+    if (!nextId || inventoryInFlight.has(nextId)) continue;
+    inventoryInFlight.add(nextId);
+    inventoryWorkers += 1;
+    setImmediate(() => runBackgroundInventoryJob(nextId, io));
+  }
+}
+
+/** Deferred full agent inventory — bounded concurrency; does not block online detection. */
 function queueBackgroundInventory(vmId, io) {
   const id = String(vmId);
-  if (inventoryInFlight.has(id)) return;
-  inventoryInFlight.add(id);
-
-  setImmediate(async () => {
-    try {
-      const doc = await VM.findById(id).select('+wmiPassword');
-      if (!doc || !needsBackgroundInventory(doc)) return;
-      logger.debug(`Background agent inventory: ${doc.name}`);
-      const { result, vm: updated } = await connectivity.checkAndUpdate(doc, { lightweight: false });
-      emitVmStatus(io, updated, result);
-    } catch (err) {
-      logger.debug(`Background inventory ${id}: ${err.message}`);
-    } finally {
-      inventoryInFlight.delete(id);
-    }
-  });
+  if (inventoryInFlight.has(id) || inventoryPending.includes(id)) return;
+  inventoryPending.push(id);
+  drainBackgroundInventory(io);
 }
 
 /** Fire-and-forget WMI check — does not block the HTTP response. */

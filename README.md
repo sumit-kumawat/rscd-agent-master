@@ -6,6 +6,10 @@ Windows-only control portal for **BladeLogic RSCD agents** — inventory, WMI he
 
 ## Production deploy
 
+**Windows VM (UI port 80, API port 81):** see [DEPLOY-WINDOWS.md](./DEPLOY-WINDOWS.md) and `.\scripts\deploy-windows.ps1`.
+
+**Linux / Mac Docker (single port 8080):**
+
 ```bash
 cp .env.production.example .env    # edit credentials & OPERATOR_API_KEY
 chmod +x scripts/*.sh
@@ -17,8 +21,8 @@ Or manually (on Mac, use `compose-up.sh` so WMI relay starts on the host):
 
 ```bash
 cd frontend && npm run build && cd ..
-docker compose build --no-cache app
-./scripts/compose-up.sh up -d
+./scripts/build-app.sh
+# or: ./scripts/compose-up.sh up -d --build
 docker compose logs -f app
 ```
 

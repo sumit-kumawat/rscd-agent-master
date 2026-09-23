@@ -11,7 +11,7 @@ const STEP_TIMEOUT = wmiConfig.stepTimeoutMs;
 
 const {
   getRscdCandidateRoots,
-  powershellEmitExistingDirs,
+  powershellFindFirstExistingDir,
 } = require('../config/rscdPaths');
 
 function sleep(ms) {
@@ -107,7 +107,7 @@ function buildFallbackScript() {
     '    }',
     '  }',
     '}',
-    powershellEmitExistingDirs(getRscdCandidateRoots()),
+    powershellFindFirstExistingDir(getRscdCandidateRoots()),
   ].join('\n');
 }
 
@@ -215,7 +215,7 @@ async function detectRscd(session, onLog, options = {}) {
       run: async () => {
         const script = [
           '$ErrorActionPreference="SilentlyContinue"',
-          powershellEmitExistingDirs(getRscdCandidateRoots()),
+          powershellFindFirstExistingDir(getRscdCandidateRoots()),
         ].join('\n');
         const r = await wmiPs(script);
         return parseDetectOutput(r.stdout);

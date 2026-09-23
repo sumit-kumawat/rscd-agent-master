@@ -1,5 +1,8 @@
-const API = '/api';
+import { getApiBase, isCrossOriginApi } from './config/connection';
+
+const API = getApiBase();
 const DEFAULT_TIMEOUT_MS = 15000;
+const FETCH_CREDENTIALS = isCrossOriginApi() ? 'include' : 'same-origin';
 
 async function request(path, options = {}) {
   const controller = new AbortController();
@@ -20,7 +23,7 @@ async function request(path, options = {}) {
         'Content-Type': 'application/json',
         ...options.headers,
       },
-      credentials: 'same-origin',
+      credentials: FETCH_CREDENTIALS,
       body: options.body,
     });
 
@@ -53,7 +56,7 @@ export const api = {
       const res = await fetch(`${API}${path}`, {
         method: 'POST',
         body: formData,
-        credentials: 'same-origin',
+        credentials: FETCH_CREDENTIALS,
         signal: controller.signal,
       });
       const data = await res.json().catch(() => ({}));

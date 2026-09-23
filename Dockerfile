@@ -1,25 +1,30 @@
-FROM node:20-alpine AS frontend
-WORKDIR /fe
-COPY frontend/package*.json ./
-RUN npm ci
-COPY frontend/ ./
-ENV DOCKER_BUILD=1
-RUN npm run build
-
+# syntax=docker/dockerfile:1
+# UI: run `cd frontend && npm run build` before `docker compose build app` (copies into backend/public).
 FROM node:20-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends \
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
+ && apt-get install -y --no-install-recommends \
     iputils-ping python3 python3-pip \
-    && pip3 install 'impacket==0.12.0' --break-system-packages \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/*
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install 'impacket==0.12.0' --break-system-packages
+
 COPY backend/wmiexec.py /usr/local/bin/wmiexec.py
 RUN chmod +x /usr/local/bin/wmiexec.py
 
 WORKDIR /app
 COPY backend/package*.json ./
-RUN npm ci --omit=dev
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev
 COPY version.txt ./version.txt
 COPY backend/ ./
-COPY --from=frontend /fe/dist ./public
+
+RUN test -f public/index.html \
+ && test -n "$(ls -A public/assets 2>/dev/null)" \
+ || (echo "ERROR: Missing frontend bundle. Run: cd frontend && npm run build" && exit 1)
 
 ENV NODE_ENV=production
 ENV WMIEXEC_PATH=/usr/local/bin/wmiexec.py

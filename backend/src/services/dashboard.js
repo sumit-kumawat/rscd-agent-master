@@ -2,6 +2,7 @@ const VM = require('../models/VM');
 const Job = require('../models/Job');
 const ActivityLog = require('../models/ActivityLog');
 const endpointSync = require('./endpointSync');
+const { countFleetReady } = require('../utils/readinessSummary');
 
 const CHART_PRIMARY = '#F55A4D';
 const CHART_COLORS = ['#F55A4D', '#052140', '#5B6FD6', '#8FA4E8', '#94A3B8'];
@@ -28,7 +29,7 @@ function buildVmQuery(filter = {}) {
 async function getDashboardSynced(filter = {}) {
   const vmQuery = buildVmQuery(filter);
   const allVms = await VM.find(vmQuery)
-    .select('status agentStatus version localUsers powerState lastFullSyncAt rscdStatus crowdStrikeStatus')
+    .select('status agentStatus version localUsers powerState lastFullSyncAt rscdStatus crowdStrikeStatus vcRedist2015X64 readiness')
     .lean();
 
   const total = allVms.length;
@@ -91,6 +92,8 @@ async function getDashboardSynced(filter = {}) {
     { name: 'Excluded', value: await VM.countDocuments({ excluded: true, osType: 'windows' }), color: '#8E8E93' },
   ].filter((s) => s.value > 0);
 
+  const readyCounts = countFleetReady(allVms);
+
   const jobs = await Job.find({}).select('status').lean();
   const jobsTotal = jobs.length;
   const jobsCompleted = jobs.filter((j) => j.status === 'completed').length;
@@ -111,6 +114,9 @@ async function getDashboardSynced(filter = {}) {
       rscdActive,
       rscdAbsent,
       crowdStrikeInstalled: csInstalled,
+      ready: readyCounts.ready,
+      notReady: readyCounts.notReady,
+      readyUnknown: readyCounts.unknown,
     },
     trend: {
       series: trend,
@@ -163,9 +169,11 @@ async function getDashboardSynced(filter = {}) {
 async function getDashboardLive(filter = {}) {
   const vmQuery = buildVmQuery(filter);
   const vms = await VM.find(vmQuery)
-    .select('name status agentStatus version connectivityState localUsers powerState lastSeenAt lastCheck')
+    .select('name status agentStatus version connectivityState localUsers powerState lastSeenAt lastCheck rscdStatus vcRedist2015X64 readiness')
     .sort({ name: 1 })
     .lean();
+
+  const readyCounts = countFleetReady(vms);
 
   const requiredPerHost = 3;
   const onlineNow = vms.filter((v) => v.status === 'online').length;
@@ -193,7 +201,13 @@ async function getDashboardLive(filter = {}) {
   const recentJobs = await Job.find({ createdAt: { $gte: since } })
     .select('createdAt status')
     .lean();
-  const jobsRunning = await Job.countDocuments({ status: 'running' });
+  const [jobsRunning, jobsPending, jobsCompleted, jobsFailed, jobsCancelled] = await Promise.all([
+    Job.countDocuments({ status: 'running' }),
+    Job.countDocuments({ status: 'pending' }),
+    Job.countDocuments({ status: 'completed' }),
+    Job.countDocuments({ status: 'failed' }),
+    Job.countDocuments({ status: 'cancelled' }),
+  ]);
   const barDays = lastNDays(6);
   const bars = barDays.map((d) => {
     const next = new Date(d);
@@ -226,9 +240,17 @@ async function getDashboardLive(filter = {}) {
     kpis: {
       online: onlineNow,
       offline: offlineNow,
+      unknown: Math.max(0, vms.length - onlineNow - offlineNow),
       jobsRunning,
+      jobsPending,
+      jobsCompleted,
+      jobsFailed,
+      jobsCancelled,
       powerOn,
       powerOff,
+      ready: readyCounts.ready,
+      notReady: readyCounts.notReady,
+      readyUnknown: readyCounts.unknown,
     },
     track: {
       items: trackLogs.map((l) => ({

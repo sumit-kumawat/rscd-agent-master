@@ -135,10 +135,14 @@ function createJobLogger(jobId, io) {
   return { log, progress };
 }
 
-async function provisionVm(vm, users, jobLogger, passwords) {
+async function provisionVm(vm, users, jobLogger, passwords, options = {}) {
   const plain = toVmPlain(vm);
-  if (vm.excluded || isAgentRemoved(plain)) {
-    await jobLogger.log('info', 'Skipped — excluded or agent removed', plain.name);
+  if (vm.excluded) {
+    await jobLogger.log('info', 'Skipped — excluded', plain.name);
+    return { ok: true, skipped: true };
+  }
+  if (!options.allowRemoved && isAgentRemoved(plain)) {
+    await jobLogger.log('info', 'Skipped — agent removed', plain.name);
     return { ok: true, skipped: true };
   }
 
@@ -301,6 +305,17 @@ async function runProvision(io, options = {}) {
       meta: stats,
     }, io);
 
+    if (options.reason !== 'login') {
+      const endpointReadiness = require('./endpointReadiness');
+      endpointReadiness.queueFleetReadiness(io, {
+        reason: 'post-provision',
+        onlineOnly: true,
+        remediateUsers: false,
+        remediateVc: true,
+        actor: options.actor,
+      });
+    }
+
     return job;
   } finally {
     inFlight = false;
@@ -320,4 +335,5 @@ module.exports = {
   runProvision,
   queueProvisionOnLogin,
   buildProvisionScript,
+  provisionVm,
 };

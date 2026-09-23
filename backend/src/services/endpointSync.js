@@ -7,20 +7,38 @@ const deployConfig = require('../config/deployConfig');
 const registrySoftware = require('./registrySoftware');
 const deployInstall = require('./deployInstall');
 const SyncRun = require('../models/SyncRun');
+const systemState = require('./systemState');
 const { decryptIfNeeded } = require('../utils/credentialCrypto');
+const logger = require('../utils/logger');
 
 const SYNC_INTERVAL_MS = Math.max(
   3600000,
-  (parseInt(process.env.ENDPOINT_SYNC_INTERVAL_HOURS || String(deployConfig.syncIntervalHours), 10) || deployConfig.syncIntervalHours) * 3600000,
+  (parseInt(process.env.SYNC_INTERVAL_HOURS || process.env.ENDPOINT_SYNC_INTERVAL_HOURS || String(deployConfig.syncIntervalHours), 10)
+    || deployConfig.syncIntervalHours) * 3600000,
 );
 
 const state = {
   running: false,
+  reason: null,
+  broadcastUi: false,
+  initialSyncDone: true,
   lastSyncAt: null,
   lastSyncDurationMs: null,
   lastSummary: null,
+  progress: { completed: 0, total: 0 },
   timer: null,
+  bootstrapped: false,
 };
+
+function syncShowsInUi(reason, broadcastUi) {
+  if (broadcastUi === false) return false;
+  return reason === 'manual' || reason === 'initial';
+}
+
+function emitSync(io, event, payload, broadcastUi) {
+  if (!io || !broadcastUi) return;
+  io.emit(event, payload);
+}
 
 async function syncOneEndpoint(vm, io, actor) {
   const started = Date.now();
@@ -121,12 +139,15 @@ async function syncOneEndpoint(vm, io, actor) {
   }
 }
 
-async function runFullSync(io, { actor = 'system', reason = 'manual' } = {}) {
+async function runFullSync(io, { actor = 'system', reason = 'manual', broadcastUi } = {}) {
   if (state.running) {
     return { alreadyRunning: true, ...state.lastSummary };
   }
 
+  const ui = broadcastUi !== undefined ? broadcastUi : syncShowsInUi(reason, true);
   state.running = true;
+  state.reason = reason;
+  state.broadcastUi = ui;
   const started = Date.now();
   let results = [];
   const syncRun = await SyncRun.create({ environment: 'all', trigger: reason, startedAt: new Date() });
@@ -138,25 +159,38 @@ async function runFullSync(io, { actor = 'system', reason = 'manual' } = {}) {
       actor,
       category: 'sync',
       message: `Full endpoint sync started (${reason})`,
+      meta: { reason, ui },
     }, io);
-    if (io) io.emit('sync:start', { reason, startedAt: new Date().toISOString() });
-
     const vms = await VM.find({ excluded: false, osType: 'windows' }).select('+wmiPassword');
-    const concurrency = Math.max(1, wmiConfig.monitorConcurrency || 10);
+    state.progress = { completed: 0, total: vms.length };
+    emitSync(io, 'sync:start', {
+      reason,
+      ui,
+      startedAt: new Date().toISOString(),
+      total: vms.length,
+      completed: 0,
+    }, ui);
+
+    const concurrency = Math.max(1, parseInt(process.env.SYNC_CONCURRENCY || process.env.MONITOR_CONCURRENCY || '10', 10));
 
     for (let i = 0; i < vms.length; i += concurrency) {
       const batch = vms.slice(i, i + concurrency);
       const batchResults = await Promise.all(batch.map((vm) => syncOneEndpoint(vm, io, actor)));
       results.push(...batchResults);
-      if (io) {
-        io.emit('sync:progress', { completed: results.length, total: vms.length });
-      }
+      state.progress = { completed: results.length, total: vms.length };
+      emitSync(io, 'sync:progress', {
+        reason,
+        ui,
+        completed: results.length,
+        total: vms.length,
+      }, ui);
     }
 
     const durationMs = Date.now() - started;
     const ok = results.filter((r) => r.ok).length;
     state.lastSyncAt = new Date();
     state.lastSyncDurationMs = durationMs;
+    state.initialSyncDone = true;
     state.lastSummary = {
       total: results.length,
       ok,
@@ -164,6 +198,11 @@ async function runFullSync(io, { actor = 'system', reason = 'manual' } = {}) {
       durationMs,
       reason,
     };
+
+    await systemState.setState({
+      initialSyncDone: true,
+      lastSyncAt: state.lastSyncAt,
+    });
 
     await audit.log({
       action: 'sync.full',
@@ -175,12 +214,12 @@ async function runFullSync(io, { actor = 'system', reason = 'manual' } = {}) {
       meta: state.lastSummary,
     }, io);
 
-    if (io) {
-      io.emit('sync:complete', {
-        ...state.lastSummary,
-        lastSyncAt: state.lastSyncAt.toISOString(),
-      });
-    }
+    emitSync(io, 'sync:complete', {
+      ...state.lastSummary,
+      reason,
+      ui,
+      lastSyncAt: state.lastSyncAt.toISOString(),
+    }, ui);
 
     await SyncRun.findByIdAndUpdate(syncRun._id, {
       endedAt: new Date(),
@@ -203,47 +242,123 @@ async function runFullSync(io, { actor = 'system', reason = 'manual' } = {}) {
       message: audit.maskSecrets(err.message),
     }, io).catch(() => {});
 
-    if (io) {
-      io.emit('sync:complete', {
-        failed: true,
-        error: err.message,
-        total: results.length,
-        ok: results.filter((r) => r.ok).length,
-        lastSyncAt: state.lastSyncAt ? state.lastSyncAt.toISOString() : null,
-      });
-    }
+    emitSync(io, 'sync:complete', {
+      failed: true,
+      error: err.message,
+      reason,
+      ui,
+      total: results.length,
+      ok: results.filter((r) => r.ok).length,
+      lastSyncAt: state.lastSyncAt ? state.lastSyncAt.toISOString() : null,
+    }, ui);
     throw err;
   } finally {
     state.running = false;
+    state.reason = null;
+    state.broadcastUi = false;
+    state.progress = { completed: 0, total: 0 };
   }
 }
 
-function startHourlySync(io) {
+async function bootstrap() {
+  if (state.bootstrapped) return;
+  const sys = await systemState.getState();
+  state.initialSyncDone = !!sys.initialSyncDone;
+  if (sys.lastSyncAt) state.lastSyncAt = new Date(sys.lastSyncAt);
+
+  const lastRun = await SyncRun.findOne().sort({ startedAt: -1 }).lean();
+  if (lastRun?.endedAt && !state.lastSyncAt) {
+    state.lastSyncAt = new Date(lastRun.endedAt);
+  }
+  state.bootstrapped = true;
+}
+
+async function fleetNeedsInitialSync() {
+  if (state.initialSyncDone) return false;
+  const total = await VM.countDocuments({ excluded: false, osType: 'windows' });
+  if (!total) {
+    await systemState.setState({ initialSyncDone: true });
+    state.initialSyncDone = true;
+    return false;
+  }
+  const withSnapshot = await VM.countDocuments({
+    excluded: false,
+    osType: 'windows',
+    lastFullSyncAt: { $exists: true, $ne: null },
+  });
+  return withSnapshot < total;
+}
+
+async function maybeStartInitialSync(io) {
+  await bootstrap();
+  if (state.running) return;
+  const needed = await fleetNeedsInitialSync();
+  if (!needed) {
+    if (!state.initialSyncDone) {
+      await systemState.setState({ initialSyncDone: true });
+      state.initialSyncDone = true;
+    }
+    return;
+  }
+  logger.info('Initial one-time full endpoint sync starting (fleet has no complete inventory snapshot yet)');
+  setImmediate(() => {
+    runFullSync(io, { actor: 'system', reason: 'initial', broadcastUi: true }).catch((err) => {
+      logger.error(`Initial sync failed: ${err.message}`);
+    });
+  });
+}
+
+function startScheduledSync(io) {
+  if (process.env.ENDPOINT_SYNC_DISABLED === 'true') {
+    logger.info('Scheduled endpoint full sync disabled (ENDPOINT_SYNC_DISABLED=true)');
+    return;
+  }
   if (state.timer) clearInterval(state.timer);
+  const hours = SYNC_INTERVAL_MS / 3600000;
   state.timer = setInterval(() => {
-    runFullSync(io, { actor: 'system', reason: 'hourly' }).catch(() => {});
+    runFullSync(io, { actor: 'system', reason: 'scheduled', broadcastUi: false }).catch((err) => {
+      logger.warn(`Scheduled sync failed: ${err.message}`);
+    });
   }, SYNC_INTERVAL_MS);
   state.timer.unref?.();
+  logger.info(`Endpoint full sync scheduled every ${hours}h (silent — no UI banner)`);
+}
+
+/** @deprecated use startScheduledSync */
+function startHourlySync(io) {
+  startScheduledSync(io);
+}
+
+function stopScheduledSync() {
+  if (state.timer) clearInterval(state.timer);
+  state.timer = null;
 }
 
 function stopHourlySync() {
-  if (state.timer) clearInterval(state.timer);
-  state.timer = null;
+  stopScheduledSync();
 }
 
 function getSyncStatus() {
   return {
     running: state.running,
+    reason: state.running ? state.reason : null,
+    ui: state.running ? state.broadcastUi : false,
+    initialSyncDone: state.initialSyncDone,
     lastSyncAt: state.lastSyncAt,
     lastSyncDurationMs: state.lastSyncDurationMs,
     lastSummary: state.lastSummary,
+    progress: state.running ? { ...state.progress } : null,
     intervalMs: SYNC_INTERVAL_MS,
   };
 }
 
 module.exports = {
+  bootstrap,
+  maybeStartInitialSync,
   runFullSync,
+  startScheduledSync,
   startHourlySync,
+  stopScheduledSync,
   stopHourlySync,
   getSyncStatus,
 };

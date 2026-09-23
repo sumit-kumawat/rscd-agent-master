@@ -41,11 +41,13 @@ const deploymentsRoutes = require('./api/routes/deployments');
 const mongoose = require('mongoose');
 
 const isProd = process.env.NODE_ENV === 'production';
-const corsOrigin = process.env.CORS_ORIGIN || '*';
+const { createCorsOptions, createSocketCorsOptions } = require('./config/cors');
+const corsOptions = createCorsOptions();
+const serveStaticUi = process.env.API_SERVE_STATIC !== 'false';
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: corsOrigin === '*' ? '*' : corsOrigin.split(',') } });
+const io = new Server(server, { cors: createSocketCorsOptions() });
 app.set('io', io);
 app.set('trust proxy', 1);
 
@@ -57,7 +59,7 @@ app.use((req, res, next) => {
   if (isProd) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   next();
 });
-app.use(cors({ origin: corsOrigin === '*' ? true : corsOrigin.split(',') }));
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '20mb' }));
 const { attachActor } = require('./middleware/actor');
 app.use(attachActor);
@@ -120,35 +122,37 @@ app.use('/api/packages', packagesRoutes);
 app.use('/api/deployments', deploymentsRoutes);
 
 const publicDir = path.join(__dirname, '../public');
-app.get('/favicon.ico', (req, res) => {
-  res.sendFile(path.join(publicDir, 'favicon.png'), (err) => {
-    if (err) res.status(404).end();
+if (serveStaticUi) {
+  app.get('/favicon.ico', (req, res) => {
+    res.sendFile(path.join(publicDir, 'favicon.png'), (err) => {
+      if (err) res.status(404).end();
+    });
   });
-});
-app.get('/favicon.png', (req, res) => {
-  res.sendFile(path.join(publicDir, 'favicon.png'), (err) => {
-    if (err) res.status(404).end();
+  app.get('/favicon.png', (req, res) => {
+    res.sendFile(path.join(publicDir, 'favicon.png'), (err) => {
+      if (err) res.status(404).end();
+    });
   });
-});
-app.use('/assets', express.static(path.join(publicDir, 'assets'), {
-  maxAge: isProd ? '365d' : 0,
-  immutable: isProd,
-}));
-app.use(express.static(publicDir, {
-  maxAge: 0,
-  setHeaders(res, filePath) {
-    if (filePath.endsWith('index.html')) {
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    }
-  },
-}));
-app.get(/^\/(?!api|socket\.io|assets|favicon\.svg|favicon\.png|favicon\.ico|icons\.svg).*/, (req, res, next) => {
-  if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return next();
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.sendFile(path.join(publicDir, 'index.html'), (err) => {
-    if (err) res.status(404).json({ message: 'Not found' });
+  app.use('/assets', express.static(path.join(publicDir, 'assets'), {
+    maxAge: isProd ? '365d' : 0,
+    immutable: isProd,
+  }));
+  app.use(express.static(publicDir, {
+    maxAge: 0,
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('index.html')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      }
+    },
+  }));
+  app.get(/^\/(?!api|socket\.io|assets|favicon\.svg|favicon\.png|favicon\.ico|icons\.svg).*/, (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return next();
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.sendFile(path.join(publicDir, 'index.html'), (err) => {
+      if (err) res.status(404).json({ message: 'Not found' });
+    });
   });
-});
+}
 
 io.on('connection', (socket) => {
   socket.on('join:job', (id) => socket.join(`job:${id}`));
@@ -197,7 +201,10 @@ connectDB().then(() => {
         );
       }
       monitor.start(io, { deferInitialRun: wmiConfig.startupCheckOnBoot });
-      endpointSync.startHourlySync(io);
+      endpointSync.bootstrap()
+        .then(() => endpointSync.maybeStartInitialSync(io))
+        .then(() => endpointSync.startScheduledSync(io))
+        .catch((err) => logger.warn(`Endpoint sync bootstrap: ${err.message}`));
 
       if (wmiConfig.startupCheckOnBoot) {
         (async () => {
