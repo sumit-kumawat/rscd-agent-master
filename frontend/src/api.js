@@ -44,6 +44,13 @@ async function request(path, options = {}) {
   }
 }
 
+/** Normalize list responses: { success, data: [] } or raw array. */
+export function unwrapList(response) {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.data)) return response.data;
+  return [];
+}
+
 export const api = {
   get: (path, opts) => request(path, { ...opts }),
   post: (path, body, opts) => request(path, { method: 'POST', body: JSON.stringify(body), ...opts }),

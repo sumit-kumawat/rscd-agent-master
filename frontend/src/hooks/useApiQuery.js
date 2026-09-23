@@ -2,6 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+function hasLoadedData(cur) {
+  if (cur === undefined || cur === null) return false;
+  if (Array.isArray(cur)) return cur.length > 0;
+  return true;
+}
+
 /**
  * Stable data-fetch hook: timeout + retry, never infinite loading.
  * - First fetch: loading skeleton when no cached data
@@ -17,7 +23,7 @@ export function useApiQuery(fetcher, deps = [], options = {}) {
   } = options;
 
   const [status, setStatus] = useState(
-    initialData !== undefined && initialData !== null ? 'success' : 'idle',
+    hasLoadedData(initialData) ? 'success' : 'idle',
   );
   const [data, setData] = useState(initialData);
   const [error, setError] = useState(null);
@@ -43,9 +49,7 @@ export function useApiQuery(fetcher, deps = [], options = {}) {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const cur = dataRef.current;
-    const hasData = cur !== undefined && cur !== null
-      && !(Array.isArray(cur) && cur.length === 0);
+    const hasData = hasLoadedData(dataRef.current);
     if (!silent && !hasData) setStatus('loading');
     setError(null);
 
@@ -57,14 +61,11 @@ export function useApiQuery(fetcher, deps = [], options = {}) {
         if (id !== runId.current || controller.signal.aborted) return;
         const isEmpty = result == null || (Array.isArray(result) && result.length === 0);
         setData(result);
+        dataRef.current = result;
         setStatus(isEmpty ? 'empty' : 'success');
         return;
       } catch (err) {
         if (err.name === 'AbortError') {
-          if (id === runId.current) {
-            const stillHasData = dataRef.current !== undefined && dataRef.current !== null;
-            setStatus(stillHasData ? 'success' : 'idle');
-          }
           return;
         }
         lastErr = err;
@@ -74,24 +75,18 @@ export function useApiQuery(fetcher, deps = [], options = {}) {
 
     if (id !== runId.current) return;
     setError(lastErr?.message || 'Request failed');
-    const stillHasData = dataRef.current !== undefined && dataRef.current !== null;
-    setStatus(stillHasData ? 'success' : 'error');
+    setStatus(hasLoadedData(dataRef.current) ? 'success' : 'error');
   }, [enabled, retries, timeout]);
 
   useEffect(() => {
-    setData(initialData);
-    dataRef.current = initialData;
     setError(null);
-    setStatus(
-      initialData !== undefined && initialData !== null ? 'success' : (enabled ? 'idle' : 'empty'),
-    );
-
     if (!enabled) return undefined;
 
-    reload(true);
+    const silent = hasLoadedData(dataRef.current);
+    reload(silent);
     return () => { abortRef.current?.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reload, enabled, initialData, ...deps]);
+  }, [reload, enabled, ...deps]);
 
   const silentReload = useCallback(() => reload(true), [reload]);
   const isLoading = status === 'loading';

@@ -1,7 +1,7 @@
 import { memo, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { RefreshCw, Loader2 } from 'lucide-react';
-import api from './api';
+import api, { unwrapList } from './api';
 import { onSocket } from './socket';
 import { useToast } from './components/Toast';
 import { useSearch } from './context/SearchContext';
@@ -59,26 +59,22 @@ export default function JobsPage() {
   }, [search]);
 
   const {
-    data: jobs = [],
+    data: jobsRaw,
     isLoading,
     isError,
     error,
     reload,
-    silentReload,
     patchData,
   } = useApiQuery(
     async ({ timeout, signal }) => {
       const q = debouncedSearch ? `?search=${encodeURIComponent(debouncedSearch)}` : '';
       const r = await api.get(`/jobs${q}`, { timeout, signal });
-      return r.data || [];
+      return unwrapList(r);
     },
-    [debouncedSearch],
-    { initialData: [] },
+    [debouncedSearch, tick],
   );
 
-  useEffect(() => {
-    silentReload();
-  }, [tick, silentReload]);
+  const jobs = Array.isArray(jobsRaw) ? jobsRaw : [];
 
   useEffect(() => {
     const patch = (data) => patchData((prev) => patchJobList(prev, data));
