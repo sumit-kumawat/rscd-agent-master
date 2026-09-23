@@ -2,7 +2,11 @@
 
 Windows-only control portal for **BladeLogic RSCD agents** — inventory, WMI health checks, and bulk uninstall jobs across your VM fleet.
 
-**URL:** http://localhost:8080
+**URL:** http://localhost:8080 (Docker `APP_PORT`, mapped to backend port 5000 inside the container)
+
+Do **not** use `http://localhost:5000` on macOS — that port is often taken by AirPlay Receiver.
+
+**Local UI dev** (optional): `cd frontend && npm run dev` → http://localhost:3000 (proxies API to http://127.0.0.1:8080)
 
 ## Production deploy
 

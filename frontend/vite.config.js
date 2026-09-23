@@ -6,6 +6,9 @@ import { fileURLToPath } from 'url'
 
 const dir = path.dirname(fileURLToPath(import.meta.url))
 
+/** Docker app publishes backend on APP_PORT (default 8080). Avoid :5000 on macOS (AirPlay). */
+const devApiTarget = process.env.VITE_DEV_API_TARGET || 'http://127.0.0.1:8080'
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   build: {
@@ -13,10 +16,13 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    port: 3000,
+    port: Number(process.env.VITE_DEV_PORT) || 3000,
+    strictPort: false,
     proxy: {
-      '/api': { target: 'http://localhost:5000', changeOrigin: true },
-      '/socket.io': { target: 'http://localhost:5000', ws: true },
+      '/api': { target: devApiTarget, changeOrigin: true },
+      '/socket.io': { target: devApiTarget, ws: true },
+      '/health': { target: devApiTarget, changeOrigin: true },
+      '/ready': { target: devApiTarget, changeOrigin: true },
     },
   },
 })

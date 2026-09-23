@@ -65,8 +65,18 @@ export function useApiQuery(fetcher, deps = [], options = {}) {
         setStatus(isEmpty ? 'empty' : 'success');
         return;
       } catch (err) {
-        if (err.name === 'AbortError') {
+        if (err.name === 'AbortError' && id !== runId.current) {
           return;
+        }
+        if (err.name === 'AbortError' && controller.signal.aborted && id === runId.current) {
+          lastErr = err.message?.includes('timed out')
+            ? err
+            : new Error(err.message || 'Request cancelled');
+          if (attempt < retries && lastErr.message?.includes('timed out')) {
+            await sleep(Math.min(1000 * 2 ** attempt, 8000));
+            continue;
+          }
+          break;
         }
         lastErr = err;
         if (attempt < retries) await sleep(Math.min(1000 * 2 ** attempt, 8000));

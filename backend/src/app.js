@@ -64,6 +64,10 @@ app.use(express.json({ limit: '20mb' }));
 const { attachActor } = require('./middleware/actor');
 app.use(attachActor);
 
+app.get('/api/health', (req, res) => {
+  res.redirect(307, '/health');
+});
+
 app.get('/health', (req, res) => {
   let wmi = {};
   try {

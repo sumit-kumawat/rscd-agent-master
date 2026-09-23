@@ -64,6 +64,7 @@ export default function JobsPage() {
     isError,
     error,
     reload,
+    silentReload,
     patchData,
   } = useApiQuery(
     async ({ timeout, signal }) => {
@@ -71,10 +72,14 @@ export default function JobsPage() {
       const r = await api.get(`/jobs${q}`, { timeout, signal });
       return unwrapList(r);
     },
-    [debouncedSearch, tick],
+    [debouncedSearch],
   );
 
   const jobs = Array.isArray(jobsRaw) ? jobsRaw : [];
+
+  useEffect(() => {
+    silentReload();
+  }, [tick, silentReload]);
 
   useEffect(() => {
     const patch = (data) => patchData((prev) => patchJobList(prev, data));
